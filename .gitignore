@@ -25,6 +25,13 @@ __pycache__/
 # Keep ICO (generated icon) but exclude temporary PNG
 LivePhotoViewer.WPF/Assets/app_icon.png
 
+# External repos / experiments
+live-photo-conv/
+livephoto_viewer/
+samples/
+*.jpg
+*.html
+
 # Session artifacts
 .claude/
 *.log
