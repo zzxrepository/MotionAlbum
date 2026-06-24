@@ -107,24 +107,25 @@ namespace LivePhotoViewer.WPF
                 var rootNode = new DirectoryNode
                 {
                     Name = Path.GetFileName(rootPath) ?? rootPath,
-                    FullPath = rootPath
+                    FullPath = rootPath,
+                    PhotoCount = SafeCountJpg(rootPath)
                 };
 
                 AddSubDirectories(rootNode, rootPath);
 
                 DirectoryTree.Items.Clear();
                 DirectoryTree.Items.Add(rootNode);
-
-                // 展开根节点
-                if (DirectoryTree.ItemContainerGenerator.ContainerFromItem(rootNode) is TreeViewItem rootItem)
-                {
-                    rootItem.IsExpanded = true;
-                }
             }
             catch (Exception ex)
             {
                 StatusText.Text = $"目录树加载失败: {ex.Message}";
             }
+        }
+
+        private static int SafeCountJpg(string path)
+        {
+            try { return Directory.EnumerateFiles(path, "*.jpg").Count(); }
+            catch { return 0; }
         }
 
         private void AddSubDirectories(DirectoryNode parent, string path)
@@ -133,16 +134,17 @@ namespace LivePhotoViewer.WPF
             {
                 foreach (var dir in Directory.EnumerateDirectories(path).OrderBy(d => d))
                 {
+                    int count = SafeCountJpg(dir);
                     var node = new DirectoryNode
                     {
                         Name = Path.GetFileName(dir),
-                        FullPath = dir
+                        FullPath = dir,
+                        PhotoCount = count
                     };
                     AddSubDirectories(node, dir);
 
                     // 只显示包含 jpg 文件或有子目录的文件夹
-                    bool hasPhotos = Directory.EnumerateFiles(dir, "*.jpg").Any();
-                    if (hasPhotos || node.Children.Count > 0)
+                    if (count > 0 || node.Children.Count > 0)
                     {
                         parent.Children.Add(node);
                     }
@@ -447,7 +449,7 @@ namespace LivePhotoViewer.WPF
                 // 删除按钮
                 var removeBtn = new Button
                 {
-                    Content = " ✕",
+                    Content = " x",
                     FontSize = 10,
                     Foreground = Brushes.White,
                     Background = Brushes.Transparent,
@@ -464,7 +466,12 @@ namespace LivePhotoViewer.WPF
                         photo.Tags.Remove(t);
                         UpdateViewerTags(photo);
                         RefreshTagFilterCombo();
-                        _ = LoadDirectoryAsync(_currentDir);
+                        SyncThumbnailCardTags(photo.FilePath, photo.Tags);
+
+                        // 如果当前有标签筛选，需要重载以更新筛选结果
+                        string? selectedTag = TagFilterCombo.SelectedItem?.ToString();
+                        if (!string.IsNullOrEmpty(selectedTag) && selectedTag != "全部")
+                            _ = LoadDirectoryAsync(_currentDir);
                     }
                 };
 
@@ -505,7 +512,27 @@ namespace LivePhotoViewer.WPF
             TagInputBox.Clear();
             UpdateViewerTags(photo);
             RefreshTagFilterCombo();
-            _ = LoadDirectoryAsync(_currentDir);
+            SyncThumbnailCardTags(photo.FilePath, photo.Tags);
+
+            // 如果当前有标签筛选，需要重载以更新筛选结果
+            string? selectedTag = TagFilterCombo.SelectedItem?.ToString();
+            if (!string.IsNullOrEmpty(selectedTag) && selectedTag != "全部")
+                _ = LoadDirectoryAsync(_currentDir);
+        }
+
+        /// <summary>
+        /// 只更新对应缩略图卡片的标签显示，不重新加载整个目录
+        /// </summary>
+        private void SyncThumbnailCardTags(string filePath, List<string> tags)
+        {
+            foreach (ThumbnailCard card in ThumbnailPanel.Children)
+            {
+                if (card.FilePath == filePath)
+                {
+                    card.SetTags(tags);
+                    break;
+                }
+            }
         }
 
         private void StopLivePlayback()

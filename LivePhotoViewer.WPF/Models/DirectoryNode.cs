@@ -10,6 +10,12 @@ namespace LivePhotoViewer.WPF.Models
         public string Name { get; set; } = string.Empty;
         public string FullPath { get; set; } = string.Empty;
         public bool IsSelected { get; set; }
+        public int PhotoCount { get; set; }
         public List<DirectoryNode> Children { get; set; } = new();
+
+        /// <summary>
+        /// 显示文本：名称 + 照片数量
+        /// </summary>
+        public string DisplayText => PhotoCount > 0 ? $"{Name} ({PhotoCount})" : Name;
     }
 }

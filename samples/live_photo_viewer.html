@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>动态照片查看器 - samples</title>
+<style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+    h1 { text-align: center; color: #333; }
+    .stats { text-align: center; margin-bottom: 20px; color: #666; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }
+    .card { background: #fff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); overflow: hidden; transition: transform 0.2s; }
+    .card:hover { transform: translateY(-4px); box-shadow: 0 4px 16px rgba(0,0,0,0.15); }
+    .media { position: relative; width: 100%; height: 240px; background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    .media img, .media video { max-width: 100%; max-height: 100%; object-fit: contain; }
+    .media video { display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+    .card.playing .media img { display: none; }
+    .card.playing .media video { display: block; }
+    .overlay { position: absolute; bottom: 8px; right: 8px; background: rgba(0,0,0,0.6); color: #fff; padding: 4px 10px; border-radius: 16px; font-size: 12px; pointer-events: none; }
+    .info { padding: 12px 16px; }
+    .filename { font-size: 14px; color: #333; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .meta { font-size: 12px; color: #999; margin-top: 4px; }
+    .btn { display: block; width: 100%; padding: 10px; border: none; background: #007aff; color: #fff; font-size: 14px; cursor: pointer; transition: background 0.2s; }
+    .btn:hover { background: #0051d5; }
+    .btn.playing { background: #ff2d55; }
+    .no-video { background: #e0e0e0; color: #888; display: flex; align-items: center; justify-content: center; height: 100%; }
+</style>
+</head>
+<body>
+<h1>动态照片查看器</h1>
+<div class="stats">共 5 张照片，其中 4 张包含动态视频</div>
+<div class="grid">
+    <div class="card" id="card-IMG_20260617_140640">
+        <div class="media">
+            <img src="IMG_20260617_140640.jpg" alt="IMG_20260617_140640" loading="lazy">
+            <video src="IMG_20260617_140640.mp4" preload="none" loop playsinline muted></video>
+            <span class="overlay">LIVE</span>
+            
+        </div>
+        <div class="info">
+            <div class="filename">IMG_20260617_140640.jpg</div>
+            <div class="meta">包含实况视频</div>
+        </div>
+        <button class="btn" onclick="togglePlay('IMG_20260617_140640')" >▶ 播放实况</button>
+    </div>
+    <div class="card" id="card-IMG_20260617_141022">
+        <div class="media">
+            <img src="IMG_20260617_141022.jpg" alt="IMG_20260617_141022" loading="lazy">
+            <video src="IMG_20260617_141022.mp4" preload="none" loop playsinline muted></video>
+            <span class="overlay">LIVE</span>
+            
+        </div>
+        <div class="info">
+            <div class="filename">IMG_20260617_141022.jpg</div>
+            <div class="meta">包含实况视频</div>
+        </div>
+        <button class="btn" onclick="togglePlay('IMG_20260617_141022')" >▶ 播放实况</button>
+    </div>
+    <div class="card" id="card-IMG_20260617_151140">
+        <div class="media">
+            <img src="IMG_20260617_151140.jpg" alt="IMG_20260617_151140" loading="lazy">
+            <video src="IMG_20260617_151140.mp4" preload="none" loop playsinline muted></video>
+            <span class="overlay">LIVE</span>
+            
+        </div>
+        <div class="info">
+            <div class="filename">IMG_20260617_151140.jpg</div>
+            <div class="meta">包含实况视频</div>
+        </div>
+        <button class="btn" onclick="togglePlay('IMG_20260617_151140')" >▶ 播放实况</button>
+    </div>
+    <div class="card" id="card-IMG_20260617_192759">
+        <div class="media">
+            <img src="IMG_20260617_192759.jpg" alt="IMG_20260617_192759" loading="lazy">
+            <video src="IMG_20260617_192759.mp4" preload="none" loop playsinline muted></video>
+            <span class="overlay">LIVE</span>
+            
+        </div>
+        <div class="info">
+            <div class="filename">IMG_20260617_192759.jpg</div>
+            <div class="meta">包含实况视频</div>
+        </div>
+        <button class="btn" onclick="togglePlay('IMG_20260617_192759')" >▶ 播放实况</button>
+    </div>
+    <div class="card" id="card-IMG_20260617_200957">
+        <div class="media">
+            <img src="IMG_20260617_200957.jpg" alt="IMG_20260617_200957" loading="lazy">
+            
+            
+            <div class="no-video">无动态视频</div>
+        </div>
+        <div class="info">
+            <div class="filename">IMG_20260617_200957.jpg</div>
+            <div class="meta">静态照片</div>
+        </div>
+        <button class="btn" onclick="togglePlay('IMG_20260617_200957')" disabled>无动态视频</button>
+    </div>
+</div>
+<script>
+function togglePlay(name) {
+    const card = document.getElementById('card-' + name);
+    const video = card.querySelector('video');
+    const btn = card.querySelector('.btn');
+    if (!video) return;
+    if (card.classList.contains('playing')) {
+        video.pause();
+        card.classList.remove('playing');
+        btn.textContent = '▶ 播放实况';
+        btn.classList.remove('playing');
+    } else {
+        // Pause others
+        document.querySelectorAll('.card.playing').forEach(c => {
+            const v = c.querySelector('video');
+            if (v) v.pause();
+            c.classList.remove('playing');
+            c.querySelector('.btn').textContent = '▶ 播放实况';
+            c.querySelector('.btn').classList.remove('playing');
+        });
+        video.play();
+        card.classList.add('playing');
+        btn.textContent = '⏸ 暂停';
+        btn.classList.add('playing');
+    }
+}
+</script>
+</body>
+</html>
