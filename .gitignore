@@ -1,0 +1,30 @@
+# Build outputs
+bin/
+obj/
+*.dll
+*.exe
+*.pdb
+
+# IDE
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Temp / Cache
+*.tmp
+cache/
+*.cache
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Assets generated at build time
+# Keep ICO (generated icon) but exclude temporary PNG
+LivePhotoViewer.WPF/Assets/app_icon.png
+
+# Session artifacts
+.claude/
+*.log
