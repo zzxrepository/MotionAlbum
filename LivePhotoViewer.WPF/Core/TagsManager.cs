@@ -68,6 +68,38 @@ namespace LivePhotoViewer.WPF.Core
             return new List<string>();
         }
 
+        public async System.Threading.Tasks.Task AddTagAsync(string directory, string fileName, string tag)
+        {
+            string d = NormalizeDir(directory);
+            if (!_tags.ContainsKey(d))
+                _tags[d] = new Dictionary<string, List<string>>();
+            if (!_tags[d].ContainsKey(fileName))
+                _tags[d][fileName] = new List<string>();
+
+            string trimmed = tag.Trim();
+            if (string.IsNullOrEmpty(trimmed)) return;
+
+            if (!_tags[d][fileName].Contains(trimmed))
+            {
+                _tags[d][fileName].Add(trimmed);
+                await System.Threading.Tasks.Task.Run(() => Save());
+            }
+        }
+
+        public async System.Threading.Tasks.Task RemoveTagAsync(string directory, string fileName, string tag)
+        {
+            string d = NormalizeDir(directory);
+            if (_tags.TryGetValue(d, out var dict) && dict.TryGetValue(fileName, out var list))
+            {
+                list.Remove(tag.Trim());
+                if (list.Count == 0)
+                    dict.Remove(fileName);
+                if (dict.Count == 0)
+                    _tags.Remove(d);
+                await System.Threading.Tasks.Task.Run(() => Save());
+            }
+        }
+
         public void AddTag(string directory, string fileName, string tag)
         {
             string d = NormalizeDir(directory);

@@ -24,6 +24,7 @@ namespace LivePhotoViewer.WPF
         private string _currentDir = string.Empty;
         private string _rootDir = string.Empty;
         private List<PhotoItem> _photos = new();
+        private readonly Dictionary<string, ThumbnailCard> _cardMap = new();
         private readonly SemaphoreSlim _thumbSemaphore = new(4, 4);
         private CancellationTokenSource? _loadCts;
 
@@ -33,6 +34,18 @@ namespace LivePhotoViewer.WPF
         private LibVLCSharp.Shared.MediaPlayer? _mediaPlayer;
         private bool _isPlayingLive;
         private CancellationTokenSource? _viewerCts;
+
+        // ========== 图片缩放状态 ==========
+        private double _currentScale = 1.0;
+        private bool _isDragging;
+        private Point _dragStart;
+        private Point _dragStartTranslate;
+        private DateTime _lastClickTime;
+        private Point _lastClickPos;
+
+        // ========== 目录切换防抖 ==========
+        private System.Windows.Threading.DispatcherTimer? _treeDebounceTimer;
+        private string? _pendingTreePath;
 
         public MainWindow()
         {
@@ -87,7 +100,7 @@ namespace LivePhotoViewer.WPF
             if (dialog.ShowDialog() == true)
             {
                 _rootDir = dialog.FolderName;
-                BuildDirectoryTree(_rootDir);
+                _ = BuildDirectoryTreeAsync(_rootDir);
                 _ = LoadDirectoryAsync(dialog.FolderName);
             }
         }
@@ -96,25 +109,48 @@ namespace LivePhotoViewer.WPF
         {
             if (DirectoryTree.SelectedItem is DirectoryNode node)
             {
-                _ = LoadDirectoryAsync(node.FullPath);
+                _pendingTreePath = node.FullPath;
+                if (_treeDebounceTimer == null)
+                {
+                    _treeDebounceTimer = new System.Windows.Threading.DispatcherTimer
+                    {
+                        Interval = TimeSpan.FromMilliseconds(150)
+                    };
+                    _treeDebounceTimer.Tick += (_, _) =>
+                    {
+                        _treeDebounceTimer?.Stop();
+                        if (!string.IsNullOrEmpty(_pendingTreePath))
+                        {
+                            _ = LoadDirectoryAsync(_pendingTreePath);
+                            _pendingTreePath = null;
+                        }
+                    };
+                }
+                _treeDebounceTimer.Stop();
+                _treeDebounceTimer.Start();
             }
         }
 
-        private void BuildDirectoryTree(string rootPath)
+        private async Task BuildDirectoryTreeAsync(string rootPath)
         {
             try
             {
-                var rootNode = new DirectoryNode
+                StatusText.Text = "正在扫描目录...";
+                var rootNode = await Task.Run(() =>
                 {
-                    Name = Path.GetFileName(rootPath) ?? rootPath,
-                    FullPath = rootPath,
-                    PhotoCount = SafeCountJpg(rootPath)
-                };
-
-                AddSubDirectories(rootNode, rootPath);
+                    var node = new DirectoryNode
+                    {
+                        Name = Path.GetFileName(rootPath) ?? rootPath,
+                        FullPath = rootPath,
+                        PhotoCount = SafeCountJpg(rootPath)
+                    };
+                    AddSubDirectories(node, rootPath);
+                    return node;
+                });
 
                 DirectoryTree.Items.Clear();
                 DirectoryTree.Items.Add(rootNode);
+                StatusText.Text = string.Empty;
             }
             catch (Exception ex)
             {
@@ -161,6 +197,7 @@ namespace LivePhotoViewer.WPF
 
             _currentDir = path;
             ThumbnailPanel.Children.Clear();
+            _cardMap.Clear();
             StatusText.Text = "正在扫描文件夹...";
             RefreshTagFilterCombo();
 
@@ -197,6 +234,7 @@ namespace LivePhotoViewer.WPF
 
                 // 逐步显示占位卡片
                 var cards = new List<ThumbnailCard>();
+                int cardCount = 0;
                 foreach (var photo in _photos)
                 {
                     if (token.IsCancellationRequested) return;
@@ -213,7 +251,12 @@ namespace LivePhotoViewer.WPF
                     card.PhotoClicked += OnThumbnailClick;
                     card.FavoriteToggled += OnFavoriteToggle;
                     ThumbnailPanel.Children.Add(card);
+                    _cardMap[photo.FilePath] = card;
                     cards.Add(card);
+
+                    cardCount++;
+                    if (cardCount % 20 == 0)
+                        await Task.Delay(1);
                 }
 
                 StatusText.Text = $"{Path.GetFileName(path)}  |  正在生成缩略图...";
@@ -377,6 +420,7 @@ namespace LivePhotoViewer.WPF
         private void ExitViewerMode()
         {
             StopLivePlayback();
+            ResetImageTransform();
             ViewerMode.Visibility = Visibility.Collapsed;
             GridMode.Visibility = Visibility.Visible;
             _viewerIndex = -1;
@@ -410,6 +454,9 @@ namespace LivePhotoViewer.WPF
 
             // 更新标签显示
             UpdateViewerTags(photo);
+
+            // 重置缩放
+            ResetImageTransform();
 
             // 预加载实况视频数据（后台提取但不播放）
             if (photo.IsLivePhoto && _libVlc != null)
@@ -458,11 +505,11 @@ namespace LivePhotoViewer.WPF
                     Cursor = System.Windows.Input.Cursors.Hand,
                     Tag = tag
                 };
-                removeBtn.Click += (s, e) =>
+                removeBtn.Click += async (s, e) =>
                 {
                     if (s is Button btn && btn.Tag is string t)
                     {
-                        _tagsManager.RemoveTag(_currentDir, photo.FileName, t);
+                        await _tagsManager.RemoveTagAsync(_currentDir, photo.FileName, t);
                         photo.Tags.Remove(t);
                         UpdateViewerTags(photo);
                         RefreshTagFilterCombo();
@@ -498,14 +545,14 @@ namespace LivePhotoViewer.WPF
             }
         }
 
-        private void AddTagFromInput()
+        private async void AddTagFromInput()
         {
             if (_viewerIndex < 0 || _viewerIndex >= _photos.Count) return;
             var photo = _photos[_viewerIndex];
             string tag = TagInputBox.Text.Trim();
             if (string.IsNullOrEmpty(tag)) return;
 
-            _tagsManager.AddTag(_currentDir, photo.FileName, tag);
+            await _tagsManager.AddTagAsync(_currentDir, photo.FileName, tag);
             if (!photo.Tags.Contains(tag))
                 photo.Tags.Add(tag);
 
@@ -525,13 +572,9 @@ namespace LivePhotoViewer.WPF
         /// </summary>
         private void SyncThumbnailCardTags(string filePath, List<string> tags)
         {
-            foreach (ThumbnailCard card in ThumbnailPanel.Children)
+            if (_cardMap.TryGetValue(filePath, out var card))
             {
-                if (card.FilePath == filePath)
-                {
-                    card.SetTags(tags);
-                    break;
-                }
+                card.SetTags(tags);
             }
         }
 
@@ -651,13 +694,9 @@ namespace LivePhotoViewer.WPF
             UpdateStatus();
 
             // 同步更新缩略图卡片上的收藏状态
-            foreach (ThumbnailCard card in ThumbnailPanel.Children)
+            if (_cardMap.TryGetValue(photo.FilePath, out var card))
             {
-                if (card.FilePath == photo.FilePath)
-                {
-                    card.IsFavorite = newState;
-                    break;
-                }
+                card.IsFavorite = newState;
             }
         }
 
@@ -674,6 +713,94 @@ namespace LivePhotoViewer.WPF
         private void ViewerClose_Click(object sender, RoutedEventArgs e)
         {
             ExitViewerMode();
+        }
+
+        // ========== 图片缩放与拖拽 ==========
+        private void ResetImageTransform()
+        {
+            _currentScale = 1.0;
+            _isDragging = false;
+            ViewerScaleTransform.ScaleX = 1;
+            ViewerScaleTransform.ScaleY = 1;
+            ViewerTranslateTransform.X = 0;
+            ViewerTranslateTransform.Y = 0;
+            LeftNavZone.Visibility = Visibility.Visible;
+            RightNavZone.Visibility = Visibility.Visible;
+        }
+
+        private void ViewerImageContainer_MouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            if (ViewerImage.Source == null) return;
+
+            double delta = e.Delta > 0 ? 1.15 : 0.85;
+            double newScale = _currentScale * delta;
+            if (newScale > 5) newScale = 5;
+            if (newScale < 0.1) newScale = 0.1;
+
+            // 以鼠标位置为中心缩放
+            Point mouseOnImage = e.GetPosition(ViewerImage);
+            double mx = mouseOnImage.X - ViewerImage.ActualWidth / 2;
+            double my = mouseOnImage.Y - ViewerImage.ActualHeight / 2;
+
+            ViewerTranslateTransform.X += mx * (_currentScale - newScale);
+            ViewerTranslateTransform.Y += my * (_currentScale - newScale);
+            ViewerScaleTransform.ScaleX = newScale;
+            ViewerScaleTransform.ScaleY = newScale;
+            _currentScale = newScale;
+
+            // 缩放时隐藏左右翻页区，避免误触
+            bool isZoomed = _currentScale > 1.01;
+            LeftNavZone.Visibility = isZoomed ? Visibility.Collapsed : Visibility.Visible;
+            RightNavZone.Visibility = isZoomed ? Visibility.Collapsed : Visibility.Visible;
+
+            e.Handled = true;
+        }
+
+        private void ViewerImageContainer_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            // 双击检测（300ms 内同位置再次点击）
+            var now = DateTime.Now;
+            var pos = e.GetPosition(ViewerImageContainer);
+            if ((now - _lastClickTime).TotalMilliseconds < 300 &&
+                Math.Abs(pos.X - _lastClickPos.X) < 5 &&
+                Math.Abs(pos.Y - _lastClickPos.Y) < 5)
+            {
+                ResetImageTransform();
+                e.Handled = true;
+                return;
+            }
+            _lastClickTime = now;
+            _lastClickPos = pos;
+
+            if (_currentScale > 1.01)
+            {
+                _isDragging = true;
+                _dragStart = pos;
+                _dragStartTranslate = new Point(ViewerTranslateTransform.X, ViewerTranslateTransform.Y);
+                ViewerImageContainer.CaptureMouse();
+                e.Handled = true;
+            }
+        }
+
+        private void ViewerImageContainer_MouseMove(object sender, MouseEventArgs e)
+        {
+            if (_isDragging)
+            {
+                Point current = e.GetPosition(ViewerImageContainer);
+                ViewerTranslateTransform.X = _dragStartTranslate.X + (current.X - _dragStart.X);
+                ViewerTranslateTransform.Y = _dragStartTranslate.Y + (current.Y - _dragStart.Y);
+                e.Handled = true;
+            }
+        }
+
+        private void ViewerImageContainer_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (_isDragging)
+            {
+                _isDragging = false;
+                ViewerImageContainer.ReleaseMouseCapture();
+                e.Handled = true;
+            }
         }
 
         // ========== 键盘事件 ==========

@@ -23,7 +23,7 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
                         <Border Background="{TemplateBinding Background}"
-                                CornerRadius="6"
+                                CornerRadius="10"
                                 Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"/>
@@ -48,7 +48,7 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="ToggleButton">
                         <Border Background="{TemplateBinding Background}"
-                                CornerRadius="6"
+                                CornerRadius="10"
                                 Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"/>
@@ -70,7 +70,7 @@
         <!-- 标签小圆角样式 -->
         <Style x:Key="TagChipStyle" TargetType="Border">
             <Setter Property="Background" Value="{DynamicResource HoverBorderBrush}"/>
-            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="CornerRadius" Value="8"/>
             <Setter Property="Padding" Value="8,3"/>
             <Setter Property="Margin" Value="0,0,6,0"/>
         </Style>
@@ -203,17 +203,25 @@
                         </ToggleButton>
 
                         <!-- 标签筛选 -->
-                        <ComboBox x:Name="TagFilterCombo"
-                                  Margin="8,0,0,0"
-                                  Width="100"
-                                  Height="32"
-                                  VerticalAlignment="Center"
-                                  Background="{DynamicResource CardBgBrush}"
-                                  Foreground="{DynamicResource TextBrush}"
-                                  BorderBrush="{DynamicResource BorderBrush}"
-                                  SelectionChanged="TagFilterCombo_SelectionChanged"
-                                  ToolTip="按标签筛选">
-                        </ComboBox>
+                        <TextBlock Text="🏷" FontSize="14" VerticalAlignment="Center" Margin="8,0,2,0"/>
+                        <TextBlock Text="筛选" FontSize="11" VerticalAlignment="Center" Foreground="{DynamicResource SubTextBrush}" Margin="0,0,4,0"/>
+                        <Border CornerRadius="10"
+                                BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1"
+                                Background="{DynamicResource CardBgBrush}"
+                                Width="90"
+                                Height="26"
+                                VerticalAlignment="Center">
+                            <ComboBox x:Name="TagFilterCombo"
+                                      Background="Transparent"
+                                      BorderThickness="0"
+                                      Foreground="{DynamicResource TextBrush}"
+                                      VerticalAlignment="Center"
+                                      VerticalContentAlignment="Center"
+                                      Padding="4,0"
+                                      SelectionChanged="TagFilterCombo_SelectionChanged"
+                                      ToolTip="按标签筛选"/>
+                        </Border>
 
                         <Button x:Name="BtnClearTagFilter"
                                 Content="✕"
@@ -276,7 +284,7 @@
                             ToolTip="上一张 (←)"
                             Style="{StaticResource ToolbarButtonStyle}">
                         <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
-                            <TextBlock Text="◀" FontSize="18" HorizontalAlignment="Center"/>
+                            <TextBlock Text="❮" FontSize="18" HorizontalAlignment="Center"/>
                             <TextBlock Text="上一张" FontSize="10" Opacity="0.7" HorizontalAlignment="Center" Margin="0,2,0,0"/>
                         </StackPanel>
                     </Button>
@@ -285,7 +293,7 @@
                             ToolTip="下一张 (→)"
                             Style="{StaticResource ToolbarButtonStyle}">
                         <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
-                            <TextBlock Text="▶" FontSize="18" HorizontalAlignment="Center"/>
+                            <TextBlock Text="❯" FontSize="18" HorizontalAlignment="Center"/>
                             <TextBlock Text="下一张" FontSize="10" Opacity="0.7" HorizontalAlignment="Center" Margin="0,2,0,0"/>
                         </StackPanel>
                     </Button>
@@ -325,19 +333,33 @@
             </Border>
 
             <!-- 中央显示区 -->
-            <Grid Grid.Row="1"
-                  Background="{DynamicResource ViewerBgBrush}">
+            <Grid x:Name="ViewerImageContainer"
+                  Grid.Row="1"
+                  Background="{DynamicResource ViewerBgBrush}"
+                  MouseWheel="ViewerImageContainer_MouseWheel"
+                  MouseLeftButtonDown="ViewerImageContainer_MouseLeftButtonDown"
+                  MouseMove="ViewerImageContainer_MouseMove"
+                  MouseLeftButtonUp="ViewerImageContainer_MouseLeftButtonUp">
                 <!-- 静态图片 -->
                 <Image x:Name="ViewerImage"
                        Stretch="Uniform"
-                       RenderOptions.BitmapScalingMode="HighQuality"/>
+                       RenderOptions.BitmapScalingMode="HighQuality"
+                       RenderTransformOrigin="0.5,0.5">
+                    <Image.RenderTransform>
+                        <TransformGroup>
+                            <ScaleTransform x:Name="ViewerScaleTransform" ScaleX="1" ScaleY="1"/>
+                            <TranslateTransform x:Name="ViewerTranslateTransform" X="0" Y="0"/>
+                        </TransformGroup>
+                    </Image.RenderTransform>
+                </Image>
 
                 <!-- 视频播放 -->
                 <vlc:VideoView x:Name="ViewerVideoView"
                                Visibility="Collapsed"/>
 
                 <!-- 左侧点击区（上一张） -->
-                <Border HorizontalAlignment="Left"
+                <Border x:Name="LeftNavZone"
+                         HorizontalAlignment="Left"
                          Width="120"
                          Background="Transparent"
                          Cursor="Arrow"
@@ -361,7 +383,8 @@
                 </Border>
 
                 <!-- 右侧点击区（下一张） -->
-                <Border HorizontalAlignment="Right"
+                <Border x:Name="RightNavZone"
+                         HorizontalAlignment="Right"
                          Width="120"
                          Background="Transparent"
                          Cursor="Arrow"
@@ -399,17 +422,23 @@
                         <!-- 动态填充已添加的标签 -->
                     </WrapPanel>
 
-                    <TextBox x:Name="TagInputBox"
-                             Width="120"
-                             Height="26"
-                             Margin="8,0,0,0"
-                             VerticalAlignment="Center"
-                             Background="{DynamicResource CardBgBrush}"
-                             Foreground="{DynamicResource TextBrush}"
-                             BorderBrush="{DynamicResource BorderBrush}"
-                             CaretBrush="{DynamicResource TextBrush}"
-                             KeyDown="TagInputBox_KeyDown">
-                    </TextBox>
+                    <Border CornerRadius="10"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1"
+                            Background="{DynamicResource CardBgBrush}"
+                            Width="120"
+                            Height="26"
+                            Margin="8,0,0,0"
+                            VerticalAlignment="Center">
+                        <TextBox x:Name="TagInputBox"
+                                 Background="Transparent"
+                                 BorderThickness="0"
+                                 Foreground="{DynamicResource TextBrush}"
+                                 CaretBrush="{DynamicResource TextBrush}"
+                                 VerticalContentAlignment="Center"
+                                 Padding="6,0"
+                                 KeyDown="TagInputBox_KeyDown"/>
+                    </Border>
 
                     <Button Content="添加"
                             Click="BtnAddTag_Click"
