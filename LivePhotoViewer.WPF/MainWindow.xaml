@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vlc="clr-namespace:LibVLCSharp.WPF;assembly=LibVLCSharp.WPF"
         xmlns:models="clr-namespace:LivePhotoViewer.WPF.Models"
-        Title="图片查看器"
+        Title="灵动相册 MotionAlbum（Windows 预览版）"
         Height="800"
         Width="1400"
         Icon="Assets/app_icon.ico"

@@ -6,11 +6,11 @@
     <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>
     <ApplicationIcon>Assets/app_icon.ico</ApplicationIcon>
-    <AssemblyTitle>图片查看器</AssemblyTitle>
-    <Product>图片查看器</Product>
+    <AssemblyTitle>灵动相册 MotionAlbum Windows Preview</AssemblyTitle>
+    <Product>灵动相册 MotionAlbum</Product>
     <Company>神马都会亿点点的毛毛张</Company>
     <Authors>神马都会亿点点的毛毛张</Authors>
-    <Version>1.0.0</Version>
+    <Version>0.1.0-preview.1</Version>
   </PropertyGroup>
 
   <ItemGroup>

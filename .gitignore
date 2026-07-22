@@ -1,37 +1,38 @@
-# Build outputs
+# macOS / IDE
+.DS_Store
+.vscode/
+.idea/
+.claude/
+*.user
+*.suo
+
+# Swift / macOS build outputs
+.swiftpm/
+LivePhotoLookerMac/.build/
+LivePhotoLookerMac/dist/
+LivePhotoLookerMac/release/
+
+# .NET / Windows build outputs
 bin/
 obj/
+LivePhotoViewer.WPF/bin/
+LivePhotoViewer.WPF/obj/
 *.dll
 *.exe
 *.pdb
 
-# IDE
-.vscode/
-.idea/
-*.user
-*.suo
-
-# Temp / Cache
-*.tmp
-cache/
-*.cache
-
-# Python
+# Python / legacy scripts
 __pycache__/
 *.pyc
 *.egg-info/
 
-# Assets generated at build time
-# Keep ICO (generated icon) but exclude temporary PNG
-LivePhotoViewer.WPF/Assets/app_icon.png
+# Temporary files and local caches
+*.tmp
+*.cache
+*.log
+cache/
 
-# External repos / experiments
+# Local-only samples and external references
+samples/
 live-photo-conv/
 livephoto_viewer/
-samples/
-*.jpg
-*.html
-
-# Session artifacts
-.claude/
-*.log
