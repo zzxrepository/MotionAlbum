@@ -1,0 +1,3 @@
+# MotionAlbum
+
+Initializing repository sync.
