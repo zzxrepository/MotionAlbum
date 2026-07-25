@@ -1,17 +1,41 @@
 import AppKit
 import Foundation
 
+private struct VisibleCacheSignature: Equatable {
+    let generation: UUID
+    let count: Int
+    let revision: Int
+    let filter: PhotoFilter
+    let searchText: String
+    let selectedTag: String?
+    let sortOrder: PhotoSortOrder
+    let folderPath: String?
+}
+
 @MainActor
 final class PhotoLibrary: ObservableObject {
     @Published private(set) var photos: [PhotoItem] = []
     @Published private(set) var currentFolder: URL?
     @Published var filter: PhotoFilter = .all
-    @Published var searchText = ""
+    @Published var searchText = "" {
+        didSet {
+            schedulePlaceResolutionForSearch()
+        }
+    }
+    @Published var sortOrder: PhotoSortOrder = .captureNewest {
+        didSet {
+            revision &+= 1
+        }
+    }
     @Published var selectedTag: String?
-    @Published var includeSubfolders = false
+    @Published var includeSubfolders = true
     @Published private(set) var isLoading = false
     @Published private(set) var isDetecting = false
+    @Published private(set) var isIndexingMetadata = false
+    @Published private(set) var isResolvingSearchPlaces = false
     @Published private(set) var detectedCount = 0
+    @Published private(set) var indexedMetadataCount = 0
+    @Published private(set) var metadataIndexTotal = 0
     @Published private(set) var statusMessage = "请选择一个照片文件夹"
     @Published private(set) var revision = 0
     @Published private(set) var recentFolders: [RecentFolderEntry] = []
@@ -21,6 +45,7 @@ final class PhotoLibrary: ObservableObject {
     private let tagStore = TagStore()
     private let holdFrameStore = HoldFrameStore()
     private let recentFolderStore = RecentFolderStore()
+    private let libraryIndexStore = LibraryIndexStore()
     private let detectionQueue: OperationQueue = {
         let queue = OperationQueue()
         queue.name = "MotionAlbum.LiveDetection"
@@ -28,24 +53,44 @@ final class PhotoLibrary: ObservableObject {
         queue.maxConcurrentOperationCount = 2
         return queue
     }()
+    private let metadataQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "MotionAlbum.MetadataIndexing"
+        queue.qualityOfService = .utility
+        queue.maxConcurrentOperationCount = 2
+        return queue
+    }()
     private var scanTask: Task<Void, Never>?
+    private var placeSearchTask: Task<Void, Never>?
     private var generation = UUID()
+    private var visibleCacheSignature: VisibleCacheSignature?
+    private var visibleCache: [PhotoItem] = []
+    private var photoIDSet = Set<String>()
 
     init() {
         refreshRecentFolders()
     }
 
     var filteredPhotos: [PhotoItem] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return photos.filter { item in
-            if !query.isEmpty {
-                let matchesFileName = item.fileName.localizedCaseInsensitiveContains(query)
-                let matchesTag = item.tags.contains {
-                    $0.localizedCaseInsensitiveContains(query)
-                }
-                if matchesFileName == false && matchesTag == false {
-                    return false
-                }
+        let signature = VisibleCacheSignature(
+            generation: generation,
+            count: photos.count,
+            revision: revision,
+            filter: filter,
+            searchText: searchText,
+            selectedTag: selectedTag,
+            sortOrder: sortOrder,
+            folderPath: currentFolder?.path
+        )
+        if visibleCacheSignature == signature {
+            return visibleCache
+        }
+
+        let terms = Self.searchTerms(from: searchText)
+        let filtered = photos.filter { item in
+            if terms.isEmpty == false,
+               Self.matchesSearchTerms(terms, item: item, root: currentFolder) == false {
+                return false
             }
             if let selectedTag, item.tags.contains(selectedTag) == false {
                 return false
@@ -55,14 +100,22 @@ final class PhotoLibrary: ObservableObject {
                 return true
             case .live:
                 return item.liveStatus == .live
+            case .video:
+                return item.mediaKind == .video
             case .selected:
                 return item.isSelected
             }
         }
+        let sorted = Self.sorted(filtered, by: sortOrder)
+        visibleCacheSignature = signature
+        visibleCache = sorted
+        return sorted
     }
 
     var liveCount: Int { photos.lazy.filter { $0.liveStatus == .live }.count }
+    var videoCount: Int { photos.lazy.filter { $0.mediaKind == .video }.count }
     var selectedCount: Int { photos.lazy.filter(\.isSelected).count }
+    var selectedPhotos: [PhotoItem] { photos.filter(\.isSelected) }
     var unknownCount: Int { photos.lazy.filter { $0.liveStatus == .unknown }.count }
     var taggedCount: Int { photos.lazy.filter { $0.tags.isEmpty == false }.count }
     var allTags: [String] {
@@ -76,7 +129,9 @@ final class PhotoLibrary: ObservableObject {
 
     deinit {
         scanTask?.cancel()
+        placeSearchTask?.cancel()
         detectionQueue.cancelAllOperations()
+        metadataQueue.cancelAllOperations()
         liveCache.flush()
     }
 
@@ -144,7 +199,9 @@ final class PhotoLibrary: ObservableObject {
         }
 
         scanTask?.cancel()
+        placeSearchTask?.cancel()
         detectionQueue.cancelAllOperations()
+        metadataQueue.cancelAllOperations()
         generation = UUID()
         let currentGeneration = generation
 
@@ -155,52 +212,133 @@ final class PhotoLibrary: ObservableObject {
 
         currentFolder = folder
         photos = []
+        photoIDSet = []
         selectedTag = nil
+        visibleCacheSignature = nil
+        visibleCache = []
+        isResolvingSearchPlaces = false
         detectedCount = 0
+        indexedMetadataCount = 0
+        metadataIndexTotal = 0
         isDetecting = false
+        isIndexingMetadata = false
         isLoading = true
         statusMessage = "正在扫描 \(folder.lastPathComponent)…"
         let recursive = includeSubfolders
 
         scanTask = Task { [weak self] in
+            var didShowCachedIndex = false
             do {
+                guard let self else { return }
+                if let cachedDescriptors = await self.libraryIndexStore.load(folder: folder, recursively: recursive),
+                   cachedDescriptors.isEmpty == false {
+                    try Task.checkCancellation()
+                    guard self.generation == currentGeneration else { return }
+
+                    self.applyDescriptors(
+                        cachedDescriptors,
+                        in: folder,
+                        generation: currentGeneration,
+                        statusMessage: "已从索引快速加载 \(cachedDescriptors.count) 个媒体文件，正在后台核对目录…"
+                    )
+                    didShowCachedIndex = true
+                }
+
                 let descriptors = try await Task.detached(priority: .userInitiated) {
                     try Self.scanPhotoFiles(in: folder, recursively: recursive)
                 }.value
                 try Task.checkCancellation()
-                guard let self, self.generation == currentGeneration else { return }
+                guard self.generation == currentGeneration else { return }
 
-                let selectedNames = self.selectionStore.selectedFileNames(in: folder)
-                let tagMap = self.tagStore.tagsByFileName(in: folder)
-                let holdFrameMap = self.holdFrameStore.holdFrameTimes(in: folder)
-                self.photos = descriptors.map { descriptor in
-                    let selectionKey = Self.relativeSelectionKey(for: descriptor.url, root: folder)
-                    let item = PhotoItem(
-                        descriptor: descriptor,
-                        liveStatus: self.liveCache.status(for: descriptor.cacheKey) ?? .unknown,
-                        isSelected: selectedNames.contains(selectionKey),
-                        selectionKey: selectionKey,
-                        tags: tagMap[selectionKey] ?? []
+                if didShowCachedIndex {
+                    await self.libraryIndexStore.replaceFolderIndex(
+                        descriptors: descriptors,
+                        folder: folder,
+                        recursively: recursive
                     )
-                    item.holdFrameTime = holdFrameMap[selectionKey]
-                    return item
+                    let indexedDescriptors = await self.libraryIndexStore.load(folder: folder, recursively: recursive)
+                    self.applyDescriptors(
+                        indexedDescriptors ?? descriptors,
+                        in: folder,
+                        generation: currentGeneration,
+                        statusMessage: descriptors.isEmpty
+                            ? "该文件夹中没有可支持的照片或视频"
+                            : "已核对目录，当前 \(descriptors.count) 个媒体文件"
+                    )
+                } else {
+                    self.applyDescriptors(
+                        descriptors,
+                        in: folder,
+                        generation: currentGeneration,
+                        statusMessage: descriptors.isEmpty
+                            ? "该文件夹中没有可支持的照片或视频"
+                            : "已加载 \(descriptors.count) 个媒体文件"
+                    )
+
+                    Task { [libraryIndexStore] in
+                        await libraryIndexStore.replaceFolderIndex(
+                            descriptors: descriptors,
+                            folder: folder,
+                            recursively: recursive
+                        )
+                    }
                 }
-                self.isLoading = false
-                self.detectedCount = self.photos.lazy.filter { $0.liveStatus != .unknown }.count
-                self.statusMessage = self.photos.isEmpty
-                    ? "该文件夹中没有 JPG/JPEG/HEIC 照片"
-                    : "已加载 \(self.photos.count) 张照片"
-                self.startLiveDetection(generation: currentGeneration)
             } catch is CancellationError {
                 // 用户切换目录，旧任务自然结束。
             } catch {
                 guard let self else { return }
                 self.isLoading = false
-                self.statusMessage = "扫描失败：\(error.localizedDescription)"
+                if didShowCachedIndex {
+                    self.statusMessage = "已显示索引缓存；后台核对失败：\(error.localizedDescription)"
+                } else {
+                    self.statusMessage = "扫描失败：\(error.localizedDescription)"
+                }
                 AppLogger.error("扫描照片目录失败：\(folder.path)", error: error)
             }
         }
         return true
+    }
+
+    private func applyDescriptors(
+        _ descriptors: [PhotoFileDescriptor],
+        in folder: URL,
+        generation currentGeneration: UUID,
+        statusMessage message: String
+    ) {
+        detectionQueue.cancelAllOperations()
+        metadataQueue.cancelAllOperations()
+        visibleCacheSignature = nil
+        visibleCache = []
+        isDetecting = false
+        isIndexingMetadata = false
+        indexedMetadataCount = 0
+        metadataIndexTotal = 0
+
+        let selectedNames = selectionStore.selectedFileNames(in: folder)
+        let tagMap = tagStore.tagsByFileName(in: folder)
+        let holdFrameMap = holdFrameStore.holdFrameTimes(in: folder)
+        photos = descriptors.map { descriptor in
+            let selectionKey = Self.relativeSelectionKey(for: descriptor.url, root: folder)
+            let initialLiveStatus = descriptor.mediaKind == .video
+                ? LivePhotoStatus.still
+                : descriptor.indexedLiveStatus ?? liveCache.status(for: descriptor.cacheKey) ?? .unknown
+            let item = PhotoItem(
+                descriptor: descriptor,
+                liveStatus: initialLiveStatus,
+                isSelected: selectedNames.contains(selectionKey),
+                selectionKey: selectionKey,
+                tags: tagMap[selectionKey] ?? []
+            )
+            item.holdFrameTime = holdFrameMap[selectionKey]
+            return item
+        }
+        photoIDSet = Set(photos.map(\.id))
+        revision &+= 1
+        isLoading = false
+        detectedCount = photos.lazy.filter { $0.liveStatus != .unknown }.count
+        statusMessage = message
+        startMetadataIndexing(generation: currentGeneration)
+        startLiveDetection(generation: currentGeneration)
     }
 
     func toggleSelection(_ item: PhotoItem) {
@@ -280,12 +418,111 @@ final class PhotoLibrary: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([item.url])
     }
 
+    private func schedulePlaceResolutionForSearch() {
+        placeSearchTask?.cancel()
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query.isEmpty == false else {
+            isResolvingSearchPlaces = false
+            return
+        }
+
+        let currentGeneration = generation
+        placeSearchTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 350_000_000)
+            } catch {
+                return
+            }
+
+            guard let self,
+                  self.generation == currentGeneration,
+                  self.searchText.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
+
+            let terms = Self.searchTerms(from: query)
+            guard terms.isEmpty == false,
+                  self.photos.contains(where: {
+                      Self.matchesSearchTerms(terms, item: $0, root: self.currentFolder, includePlace: false)
+                  }) == false else { return }
+
+            let candidates = self.photos.filter { item in
+                item.mediaKind == .image
+                    && item.placeName == nil
+                    && item.isResolvingPlaceName == false
+                    && item.metadata.latitude != nil
+                    && item.metadata.longitude != nil
+            }
+            guard candidates.isEmpty == false else { return }
+
+            self.isResolvingSearchPlaces = true
+            var pendingRevisionCount = 0
+            for item in candidates {
+                guard Task.isCancelled == false,
+                      self.generation == currentGeneration,
+                      self.searchText.trimmingCharacters(in: .whitespacesAndNewlines) == query else { break }
+                guard let latitude = item.metadata.latitude,
+                      let longitude = item.metadata.longitude else { continue }
+
+                item.isResolvingPlaceName = true
+                let placeName = await PlaceNameResolver.shared.resolve(latitude: latitude, longitude: longitude)
+                item.placeName = placeName
+                item.isResolvingPlaceName = false
+                pendingRevisionCount += 1
+                if pendingRevisionCount >= 12 {
+                    self.revision &+= 1
+                    pendingRevisionCount = 0
+                }
+            }
+            if pendingRevisionCount > 0 {
+                self.revision &+= 1
+            }
+            self.isResolvingSearchPlaces = false
+        }
+    }
+
+    @discardableResult
+    func removeItemsFromLibrary(_ items: [PhotoItem]) -> Int {
+        guard let currentFolder, items.isEmpty == false else { return 0 }
+        let itemIDs = Set(items.map(\.id))
+        let selectionKeys = Set(items.map(\.selectionKey))
+        let beforeCount = photos.count
+
+        photos.removeAll { itemIDs.contains($0.id) }
+        let removedCount = beforeCount - photos.count
+        guard removedCount > 0 else { return 0 }
+        photoIDSet.subtract(itemIDs)
+        visibleCacheSignature = nil
+        visibleCache = []
+
+        selectionStore.remove(fileNames: selectionKeys, in: currentFolder)
+        tagStore.remove(fileNames: selectionKeys, in: currentFolder)
+        holdFrameStore.remove(fileNames: selectionKeys, in: currentFolder)
+        Task { [libraryIndexStore, currentFolder, recursive = includeSubfolders] in
+            await libraryIndexStore.removeFolderIndex(folder: currentFolder, recursively: recursive)
+        }
+
+        if let selectedTag, photos.contains(where: { $0.tags.contains(selectedTag) }) == false {
+            self.selectedTag = nil
+        }
+
+        detectedCount = photos.lazy.filter { $0.liveStatus != .unknown }.count
+        if photos.contains(where: { $0.liveStatus == .unknown }) == false {
+            isDetecting = false
+            liveCache.flush()
+        }
+
+        revision &+= 1
+        statusMessage = summaryText
+        return removedCount
+    }
+
     private func refreshRecentFolders() {
         recentFolders = recentFolderStore.entries()
     }
 
     private func startLiveDetection(generation currentGeneration: UUID) {
-        let unknownItems = photos.filter { $0.liveStatus == .unknown }
+        guard let folder = currentFolder else { return }
+        let recursive = includeSubfolders
+        let unknownItems = photos.filter { $0.mediaKind == .image && $0.liveStatus == .unknown }
         guard !unknownItems.isEmpty else {
             isDetecting = false
             statusMessage = summaryText
@@ -316,10 +553,19 @@ final class PhotoLibrary: ObservableObject {
                     Task { @MainActor [weak self, weak item = entry.item] in
                         guard let self,
                               let item,
-                              self.generation == currentGeneration else { return }
+                              self.generation == currentGeneration,
+                              self.photoIDSet.contains(item.id) else { return }
                         item.liveStatus = newStatus
                         self.liveCache.set(newStatus, for: item.cacheKey)
-                        self.detectedCount += 1
+                        Task { [libraryIndexStore = self.libraryIndexStore, url = item.url] in
+                            await libraryIndexStore.updateLiveStatus(
+                                newStatus,
+                                for: url,
+                                folder: folder,
+                                recursively: recursive
+                            )
+                        }
+                        self.detectedCount = min(self.detectedCount + 1, self.photos.count)
                         self.revision &+= 1
                         if self.detectedCount >= self.photos.count {
                             self.isDetecting = false
@@ -336,8 +582,66 @@ final class PhotoLibrary: ObservableObject {
         }
     }
 
+    private func startMetadataIndexing(generation currentGeneration: UUID) {
+        guard let folder = currentFolder else { return }
+        let recursive = includeSubfolders
+        let imageItems = photos.filter { $0.mediaKind == .image && $0.metadata.isEmpty }
+        guard imageItems.isEmpty == false else {
+            isIndexingMetadata = false
+            return
+        }
+
+        isIndexingMetadata = true
+        indexedMetadataCount = 0
+        metadataIndexTotal = imageItems.count
+        let entries = imageItems.map { (item: $0, url: $0.url) }
+        let workerCount = min(metadataQueue.maxConcurrentOperationCount, entries.count)
+        for workerIndex in 0..<workerCount {
+            let operation = BlockOperation()
+            operation.addExecutionBlock { [weak self, weak operation] in
+                var index = workerIndex
+                while index < entries.count {
+                    guard operation?.isCancelled == false else { return }
+                    let entry = entries[index]
+                    let metadata = PhotoMetadataReader.read(from: entry.url)
+                    guard operation?.isCancelled == false else { return }
+
+                    Task { @MainActor [weak self, weak item = entry.item] in
+                        guard let self,
+                              let item,
+                              self.generation == currentGeneration,
+                              self.photoIDSet.contains(item.id) else { return }
+                        item.metadata = metadata
+                        Task { [libraryIndexStore = self.libraryIndexStore, url = item.url] in
+                            await libraryIndexStore.updateMetadata(
+                                metadata,
+                                for: url,
+                                folder: folder,
+                                recursively: recursive
+                            )
+                        }
+                        self.indexedMetadataCount = min(self.indexedMetadataCount + 1, imageItems.count)
+                        if self.indexedMetadataCount.isMultiple(of: 24) {
+                            self.revision &+= 1
+                        }
+                        if self.indexedMetadataCount >= imageItems.count {
+                            self.isIndexingMetadata = false
+                            self.metadataIndexTotal = imageItems.count
+                            self.revision &+= 1
+                        }
+                    }
+                    index += workerCount
+                }
+            }
+            metadataQueue.addOperation(operation)
+        }
+    }
+
     private var summaryText: String {
-        "共 \(photos.count) 张 · 实况 \(liveCount) 张 · 精选 \(selectedCount) 张 · 已打标签 \(taggedCount) 张"
+        if videoCount > 0 {
+            return "共 \(photos.count) 个 · 实况 \(liveCount) 张 · 视频 \(videoCount) 个 · 精选 \(selectedCount) 个 · 已打标签 \(taggedCount) 个"
+        }
+        return "共 \(photos.count) 张 · 实况 \(liveCount) 张 · 精选 \(selectedCount) 张 · 已打标签 \(taggedCount) 张"
     }
 
     private static func formatSeconds(_ seconds: Double) -> String {
@@ -356,6 +660,83 @@ final class PhotoLibrary: ObservableObject {
             .joined(separator: " ")
         guard collapsed.isEmpty == false else { return nil }
         return String(collapsed.prefix(24))
+    }
+
+    private static func searchTerms(from text: String) -> [String] {
+        text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: .whitespacesAndNewlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.isEmpty == false }
+    }
+
+    private static func matchesSearchTerms(
+        _ terms: [String],
+        item: PhotoItem,
+        root: URL?,
+        includePlace: Bool = true
+    ) -> Bool {
+        let fields = searchableFields(for: item, root: root, includePlace: includePlace)
+        return terms.allSatisfy { term in
+            fields.contains { field in
+                field.localizedCaseInsensitiveContains(term)
+            }
+        }
+    }
+
+    private static func sorted(_ items: [PhotoItem], by sortOrder: PhotoSortOrder) -> [PhotoItem] {
+        items.sorted { left, right in
+            switch sortOrder {
+            case .captureNewest:
+                if left.timelineDate != right.timelineDate {
+                    return left.timelineDate > right.timelineDate
+                }
+            case .captureOldest:
+                if left.timelineDate != right.timelineDate {
+                    return left.timelineDate < right.timelineDate
+                }
+            case .modifiedNewest:
+                if left.modifiedAt != right.modifiedAt {
+                    return left.modifiedAt > right.modifiedAt
+                }
+            case .fileNameAscending:
+                break
+            }
+            return left.fileName.localizedStandardCompare(right.fileName) == .orderedAscending
+        }
+    }
+
+    private static func searchableFields(
+        for item: PhotoItem,
+        root: URL?,
+        includePlace: Bool
+    ) -> [String] {
+        var fields = [
+            item.fileName,
+            item.url.path,
+            item.url.deletingLastPathComponent().lastPathComponent,
+            item.url.deletingLastPathComponent().path,
+            item.selectionKey,
+            item.mediaKind == .video ? "视频 video mov mp4 m4v" : "照片 图片 photo image",
+            item.liveStatus == .live ? "实况 live 动态照片" : ""
+        ]
+
+        if let root {
+            fields.append(root.path)
+            fields.append(root.lastPathComponent)
+        }
+        fields.append(contentsOf: item.tags)
+        if includePlace, let placeName = item.placeName {
+            fields.append(placeName)
+        }
+        fields.append(contentsOf: [
+            item.metadata.deviceText,
+            item.metadata.software,
+            item.metadata.capturedAt,
+            item.metadata.sizeText
+        ].compactMap { $0 })
+
+        return fields.filter { $0.isEmpty == false }
     }
 
     nonisolated private static func scanPhotoFiles(
@@ -396,8 +777,11 @@ final class PhotoLibrary: ObservableObject {
         }
 
         let sidecars = sidecarVideoURLs(from: candidateURLs)
+        let pairedVideoKeys = Set(candidateURLs
+            .filter { imageExtensions.contains($0.pathExtension.lowercased()) }
+            .map { sidecarKey(for: $0) })
         let results = candidateURLs.compactMap { url in
-            descriptor(for: url, keys: keys, sidecars: sidecars)
+            descriptor(for: url, keys: keys, sidecars: sidecars, pairedVideoKeys: pairedVideoKeys)
         }
         return results.sorted {
             $0.url.lastPathComponent.localizedStandardCompare($1.url.lastPathComponent) == .orderedAscending
@@ -411,14 +795,24 @@ final class PhotoLibrary: ObservableObject {
     nonisolated private static func descriptor(
         for url: URL,
         keys: Set<URLResourceKey>,
-        sidecars: [String: URL]
+        sidecars: [String: URL],
+        pairedVideoKeys: Set<String>
     ) -> PhotoFileDescriptor? {
-        guard imageExtensions.contains(url.pathExtension.lowercased()) else { return nil }
+        let extensionName = url.pathExtension.lowercased()
+        let mediaKind: MediaKind
+        if imageExtensions.contains(extensionName) {
+            mediaKind = .image
+        } else if videoExtensions.contains(extensionName), pairedVideoKeys.contains(sidecarKey(for: url)) == false {
+            mediaKind = .video
+        } else {
+            return nil
+        }
+
         guard let values = try? url.resourceValues(forKeys: keys),
               values.isRegularFile == true,
               values.isSymbolicLink != true,
               let size = values.fileSize else { return nil }
-        let companionVideoURL = sidecars[sidecarKey(for: url)]
+        let companionVideoURL = mediaKind == .image ? sidecars[sidecarKey(for: url)] : nil
         var companionVideoFileSize: Int64?
         var companionVideoModifiedAt: Date?
         if let companionVideoURL,
@@ -433,7 +827,9 @@ final class PhotoLibrary: ObservableObject {
             companionVideoModifiedAt: companionVideoModifiedAt,
             fileSize: Int64(size),
             modifiedAt: values.contentModificationDate ?? .distantPast,
-            metadata: PhotoMetadataReader.read(from: url)
+            metadata: PhotoMetadata(),
+            mediaKind: mediaKind,
+            indexedLiveStatus: nil
         )
     }
 

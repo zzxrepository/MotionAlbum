@@ -1,5 +1,20 @@
 import Foundation
 
+private final class AsyncResultBox<T>: @unchecked Sendable {
+    let semaphore = DispatchSemaphore(value: 0)
+    var result: Result<T, Error>?
+}
+
+private struct SelfTestError: LocalizedError {
+    let message: String
+
+    init(_ message: String) {
+        self.message = message
+    }
+
+    var errorDescription: String? { message }
+}
+
 enum SelfTest {
     static func run() -> Int32 {
         var failures: [String] = []
@@ -89,11 +104,30 @@ enum SelfTest {
             failures.append("大文件扫描异常：\(error.localizedDescription)")
         }
 
+        let missingTrashCandidate = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MotionAlbumMissingTrash-\(UUID().uuidString).jpg")
+        do {
+            let trashResult = try awaitResult {
+                try await TrashService.moveToTrash([missingTrashCandidate]) { _, _ in }
+            }
+            if trashResult.missingCount != 1 || trashResult.trashedCount != 0 || trashResult.failedCount != 0 {
+                failures.append("废纸篓缺失文件处理异常")
+            }
+        } catch {
+            failures.append("废纸篓缺失文件测试异常：\(error.localizedDescription)")
+        }
+
+        do {
+            try testLibraryIndexStore()
+        } catch {
+            failures.append("SQLite 图库索引测试异常：\(error.localizedDescription)")
+        }
+
         if failures.isEmpty {
             if samples == nil {
-                print("✅ 自检通过：24 MB 大文件扫描")
+                print("✅ 自检通过：24 MB 大文件扫描、废纸篓缺失文件处理、SQLite 图库索引")
             } else {
-                print("✅ 自检通过：5 个荣耀样本、苹果配对实况、视频提取、24 MB 大文件扫描")
+                print("✅ 自检通过：5 个荣耀样本、苹果配对实况、视频提取、24 MB 大文件扫描、废纸篓缺失文件处理、SQLite 图库索引")
             }
             return 0
         }
@@ -121,11 +155,32 @@ enum SelfTest {
             ancestor.deleteLastPathComponent()
         }
 
-        return candidates.first {
-            FileManager.default.fileExists(
-                atPath: $0.appendingPathComponent(expectedFileName).path
-            )
+        for candidate in candidates {
+            for directory in sampleDirectories(under: candidate) {
+                if FileManager.default.fileExists(
+                    atPath: directory.appendingPathComponent(expectedFileName).path
+                ) {
+                    return directory
+                }
+            }
         }
+        return nil
+    }
+
+    private static func sampleDirectories(under root: URL) -> [URL] {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return [] }
+
+        let children = (try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        let childDirectories = children.filter {
+            (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        }
+        return [root] + childDirectories
     }
 
     private static func executableURL() -> URL {
@@ -139,5 +194,85 @@ enum SelfTest {
             isDirectory: true
         )
         .appendingPathComponent(executablePath)
+    }
+
+    private static func testLibraryIndexStore() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MotionAlbumIndexSelfTest-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try FileManager.default.createDirectory(
+            at: folder,
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+
+        let file = folder.appendingPathComponent("IndexSample.jpg")
+        let contents = Data(repeating: 0x42, count: 128)
+        try contents.write(to: file)
+        let modifiedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        try FileManager.default.setAttributes([.modificationDate: modifiedAt], ofItemAtPath: file.path)
+
+        let descriptor = PhotoFileDescriptor(
+            url: file,
+            companionVideoURL: nil,
+            companionVideoFileSize: nil,
+            companionVideoModifiedAt: nil,
+            fileSize: Int64(contents.count),
+            modifiedAt: modifiedAt,
+            metadata: PhotoMetadata(),
+            mediaKind: .image,
+            indexedLiveStatus: nil
+        )
+
+        let metadata = PhotoMetadata(
+            make: "Motion",
+            model: "Album",
+            software: "SelfTest",
+            capturedAt: "2026:07:25 10:11:12",
+            capturedAtDate: Date(timeIntervalSince1970: 1_785_000_000),
+            pixelWidth: 4032,
+            pixelHeight: 3024,
+            latitude: 36.5,
+            longitude: 101.7
+        )
+
+        let loaded = try awaitResult {
+            let store = LibraryIndexStore()
+            await store.replaceFolderIndex(
+                descriptors: [descriptor],
+                folder: folder,
+                recursively: false
+            )
+            await store.updateMetadata(metadata, for: file, folder: folder, recursively: false)
+            await store.updateLiveStatus(.still, for: file, folder: folder, recursively: false)
+            guard let loaded = await store.load(folder: folder, recursively: false) else {
+                throw SelfTestError("SQLite 索引读取为空")
+            }
+            await store.removeFolderIndex(folder: folder, recursively: false)
+            return loaded
+        }
+
+        guard loaded.count == 1 else {
+            throw SelfTestError("SQLite 索引数量错误：\(loaded.count)")
+        }
+        guard loaded[0].metadata.model == "Album",
+              loaded[0].metadata.pixelWidth == 4032,
+              loaded[0].indexedLiveStatus == .still else {
+            throw SelfTestError("SQLite 索引元信息回读错误")
+        }
+    }
+
+    private static func awaitResult<T>(_ operation: @escaping () async throws -> T) throws -> T {
+        let box = AsyncResultBox<T>()
+        Task {
+            do {
+                box.result = .success(try await operation())
+            } catch {
+                box.result = .failure(error)
+            }
+            box.semaphore.signal()
+        }
+        box.semaphore.wait()
+        return try box.result!.get()
     }
 }

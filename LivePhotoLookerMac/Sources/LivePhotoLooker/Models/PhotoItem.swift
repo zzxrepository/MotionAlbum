@@ -10,9 +10,37 @@ enum LivePhotoStatus: String, Codable {
 enum PhotoFilter: String, CaseIterable, Identifiable {
     case all = "全部"
     case live = "仅实况"
+    case video = "仅视频"
     case selected = "已精选"
 
     var id: String { rawValue }
+}
+
+enum PhotoSortOrder: String, CaseIterable, Identifiable {
+    case captureNewest = "拍摄时间：新到旧"
+    case captureOldest = "拍摄时间：旧到新"
+    case modifiedNewest = "修改时间：新到旧"
+    case fileNameAscending = "文件名：A 到 Z"
+
+    var id: String { rawValue }
+
+    var shortTitle: String {
+        switch self {
+        case .captureNewest:
+            return "新到旧"
+        case .captureOldest:
+            return "旧到新"
+        case .modifiedNewest:
+            return "修改时间"
+        case .fileNameAscending:
+            return "文件名"
+        }
+    }
+}
+
+enum MediaKind: String, Codable, Sendable {
+    case image
+    case video
 }
 
 @MainActor
@@ -25,8 +53,9 @@ final class PhotoItem: ObservableObject, Identifiable {
     let modifiedAt: Date
     let cacheKey: String
     let selectionKey: String
-    let metadata: PhotoMetadata
+    let mediaKind: MediaKind
 
+    @Published var metadata: PhotoMetadata
     @Published var liveStatus: LivePhotoStatus
     @Published var isSelected: Bool
     @Published var tags: [String]
@@ -50,6 +79,7 @@ final class PhotoItem: ObservableObject, Identifiable {
         cacheKey = descriptor.cacheKey
         self.selectionKey = selectionKey
         metadata = descriptor.metadata
+        mediaKind = descriptor.mediaKind
         self.liveStatus = liveStatus
         self.isSelected = isSelected
         self.tags = tags
@@ -62,6 +92,10 @@ final class PhotoItem: ObservableObject, Identifiable {
         }
         return [url]
     }
+
+    var timelineDate: Date {
+        metadata.capturedAtDate ?? modifiedAt
+    }
 }
 
 struct PhotoFileDescriptor: Sendable {
@@ -72,6 +106,8 @@ struct PhotoFileDescriptor: Sendable {
     let fileSize: Int64
     let modifiedAt: Date
     let metadata: PhotoMetadata
+    let mediaKind: MediaKind
+    let indexedLiveStatus: LivePhotoStatus?
 
     var cacheKey: String {
         let companionSeed = [
@@ -81,8 +117,9 @@ struct PhotoFileDescriptor: Sendable {
         ]
         .compactMap { $0 }
         .joined(separator: "|")
+        let pathSeed = companionSeed.isEmpty ? url.path : "\(url.path)|\(companionSeed)"
         return LivePhotoParser.fingerprint(
-            path: companionSeed.isEmpty ? url.path : "\(url.path)|\(companionSeed)",
+            path: "\(mediaKind.rawValue)|\(pathSeed)",
             size: fileSize + (companionVideoFileSize ?? 0),
             modifiedAt: max(modifiedAt, companionVideoModifiedAt ?? .distantPast)
         )

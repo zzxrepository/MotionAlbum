@@ -6,6 +6,7 @@ actor PlaceNameResolver {
 
     private let geocoder = CLGeocoder()
     private var cache: [String: String] = [:]
+    private var misses: Set<String> = []
 
     func resolve(latitude: Double, longitude: Double) async -> String? {
         guard latitude.isFinite,
@@ -17,16 +18,21 @@ actor PlaceNameResolver {
         if let cached = cache[cacheKey] {
             return cached
         }
+        if misses.contains(cacheKey) {
+            return nil
+        }
 
         let location = CLLocation(latitude: latitude, longitude: longitude)
         do {
             let placemarks = try await reverseGeocode(location)
             guard let placeName = Self.displayName(from: placemarks.first) else {
+                misses.insert(cacheKey)
                 return nil
             }
             cache[cacheKey] = placeName
             return placeName
         } catch {
+            misses.insert(cacheKey)
             AppLogger.warning("反解析照片地点失败：\(cacheKey)", error: error)
             return nil
         }

@@ -81,6 +81,21 @@ final class SelectionStore {
         }
     }
 
+    func remove(fileNames: Set<String>, in folder: URL) {
+        guard fileNames.isEmpty == false else { return }
+        queue.sync {
+            let key = folder.standardizedFileURL.path
+            guard var folderSelections = selections[key] else { return }
+            folderSelections.subtract(fileNames)
+            if folderSelections.isEmpty {
+                selections.removeValue(forKey: key)
+            } else {
+                selections[key] = folderSelections
+            }
+            saveNow()
+        }
+    }
+
     private func saveNow() {
         do {
             try FileManager.default.createDirectory(
@@ -123,6 +138,23 @@ final class TagStore {
                 folderTags.removeValue(forKey: fileName)
             } else {
                 folderTags[fileName] = normalized
+            }
+            if folderTags.isEmpty {
+                tagsByFolder.removeValue(forKey: folderKey)
+            } else {
+                tagsByFolder[folderKey] = folderTags
+            }
+            saveNow()
+        }
+    }
+
+    func remove(fileNames: Set<String>, in folder: URL) {
+        guard fileNames.isEmpty == false else { return }
+        queue.sync {
+            let folderKey = folder.standardizedFileURL.path
+            guard var folderTags = tagsByFolder[folderKey] else { return }
+            for fileName in fileNames {
+                folderTags.removeValue(forKey: fileName)
             }
             if folderTags.isEmpty {
                 tagsByFolder.removeValue(forKey: folderKey)
@@ -179,6 +211,23 @@ final class HoldFrameStore {
             if let seconds, seconds.isFinite, seconds >= 0 {
                 folderFrames[fileName] = seconds
             } else {
+                folderFrames.removeValue(forKey: fileName)
+            }
+            if folderFrames.isEmpty {
+                framesByFolder.removeValue(forKey: folderKey)
+            } else {
+                framesByFolder[folderKey] = folderFrames
+            }
+            saveNow()
+        }
+    }
+
+    func remove(fileNames: Set<String>, in folder: URL) {
+        guard fileNames.isEmpty == false else { return }
+        queue.sync {
+            let folderKey = folder.standardizedFileURL.path
+            guard var folderFrames = framesByFolder[folderKey] else { return }
+            for fileName in fileNames {
                 folderFrames.removeValue(forKey: fileName)
             }
             if folderFrames.isEmpty {

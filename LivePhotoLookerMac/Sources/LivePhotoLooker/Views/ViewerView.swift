@@ -13,6 +13,8 @@ struct ViewerView: View {
     let onAddTag: (String) -> Void
     let onRemoveTag: (String) -> Void
     let onSetHoldFrame: (Double?) -> Void
+    let onTrash: () -> Void
+    let isLibraryBusy: Bool
 
     @State private var previewImage: NSImage?
     @State private var originalPreviewImage: NSImage?
@@ -34,6 +36,12 @@ struct ViewerView: View {
     @State private var isPreparingCoverPreview = false
     @State private var coverPreviewTask: Task<Void, Never>?
     @State private var coverFrameErrorMessage: String?
+    @State private var zoomScale = 1.0
+    @State private var gestureBaseZoom = 1.0
+    @FocusState private var hasKeyboardFocus: Bool
+
+    private let minimumZoom = 0.5
+    private let maximumZoom = 5.0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -44,6 +52,8 @@ struct ViewerView: View {
             footer
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .focusable()
+        .focused($hasKeyboardFocus)
         .task(id: item.cacheKey) {
             resetVideoForNewItem()
             resetCoverFrameEditor()
@@ -52,21 +62,40 @@ struct ViewerView: View {
             originalPreviewImage = nil
             errorMessage = nil
             tagInput = ""
+            resetZoom()
             resolvePlaceNameIfNeeded()
             autoPlayIfNeeded()
             let loaded = await ImageService.shared.image(
                 url: item.url,
-                cacheKey: "\(item.cacheKey)-2800",
-                maxPixelSize: 2800
+                cacheKey: "\(item.cacheKey)-\(item.mediaKind.rawValue)-2800",
+                maxPixelSize: 2800,
+                isVideo: item.mediaKind == .video
             )
             guard !Task.isCancelled else { return }
             previewImage = loaded
             originalPreviewImage = loaded
             autoPlayIfNeeded()
         }
+        .onAppear {
+            hasKeyboardFocus = true
+        }
         .onReceive(item.$liveStatus) { status in
             if status == .live {
                 autoPlayIfNeeded()
+            }
+        }
+        .onMoveCommand { direction in
+            switch direction {
+            case .left:
+                if canGoPrevious && isLibraryBusy == false {
+                    onPrevious()
+                }
+            case .right:
+                if canGoNext && isLibraryBusy == false {
+                    onNext()
+                }
+            default:
+                break
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { notification in
@@ -85,7 +114,7 @@ struct ViewerView: View {
             coverPreviewTask = nil
             stopVideo()
         }
-        .alert("无法播放实况", isPresented: Binding(
+        .alert("无法播放媒体", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
         )) {
@@ -109,12 +138,9 @@ struct ViewerView: View {
                                 .frame(width: proxy.size.width, height: proxy.size.height)
                                 .onAppear { player.play() }
                         } else if let previewImage {
-                            Image(nsImage: previewImage)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(width: proxy.size.width, height: proxy.size.height)
+                            zoomableImage(previewImage, viewportSize: proxy.size)
                         } else {
-                            ProgressView("正在读取图片…")
+                            ProgressView(item.mediaKind == .video ? "正在读取视频封面…" : "正在读取图片…")
                                 .foregroundStyle(.white)
                         }
                     }
@@ -123,13 +149,40 @@ struct ViewerView: View {
             }
 
             if isPreparingVideo {
-                ProgressView("正在准备实况…")
+                ProgressView(item.mediaKind == .video ? "正在准备视频…" : "正在准备实况…")
                     .padding(14)
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
             }
         }
         .frame(minWidth: 620, minHeight: 420)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func zoomableImage(_ image: NSImage, viewportSize: CGSize) -> some View {
+        ScrollView([.horizontal, .vertical], showsIndicators: zoomScale > 1.01) {
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.high)
+                .aspectRatio(contentMode: .fit)
+                .frame(width: viewportSize.width, height: viewportSize.height)
+                .scaleEffect(zoomScale)
+                .frame(
+                    width: max(viewportSize.width, viewportSize.width * zoomScale),
+                    height: max(viewportSize.height, viewportSize.height * zoomScale)
+                )
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2, perform: resetZoom)
+        }
+        .gesture(
+            MagnificationGesture()
+                .onChanged { value in
+                    zoomScale = clampedZoom(gestureBaseZoom * value)
+                }
+                .onEnded { value in
+                    zoomScale = clampedZoom(gestureBaseZoom * value)
+                    gestureBaseZoom = zoomScale
+                }
+        )
     }
 
     private var coverFrameEditor: some View {
@@ -271,6 +324,8 @@ struct ViewerView: View {
                 Text(ByteCountFormatter.string(fromByteCount: item.fileSize, countStyle: .file))
                 if item.liveStatus == .live {
                     Label("实况照片", systemImage: "livephoto")
+                } else if item.mediaKind == .video {
+                    Label("视频", systemImage: "play.rectangle")
                 }
             }
             .font(.caption)
@@ -294,6 +349,7 @@ struct ViewerView: View {
                                 RemovableTagBadgeView(tag: tag) {
                                     onRemoveTag(tag)
                                 }
+                                .disabled(isLibraryBusy)
                             }
                         }
                     }
@@ -303,11 +359,12 @@ struct ViewerView: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 150)
                     .onSubmit(addCurrentTag)
+                    .disabled(isLibraryBusy)
 
                 Button(action: addCurrentTag) {
                     Label("添加", systemImage: "plus")
                 }
-                .disabled(tagInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(tagInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLibraryBusy)
             }
         }
         .padding(.horizontal, 14)
@@ -332,7 +389,11 @@ struct ViewerView: View {
                 } else if item.isResolvingPlaceName {
                     metadataChip("正在解析地点…", systemImage: "location")
                 }
-                if item.metadata.deviceText == nil,
+                if item.mediaKind == .video {
+                    metadataChip("普通视频", systemImage: "play.rectangle")
+                }
+                if item.mediaKind == .image,
+                   item.metadata.deviceText == nil,
                    item.metadata.capturedAt == nil,
                    item.placeName == nil,
                    item.isResolvingPlaceName == false,
@@ -358,7 +419,7 @@ struct ViewerView: View {
             } label: {
                 Label("编辑封面帧", systemImage: "rectangle.on.rectangle")
             }
-            .disabled(isPreparingVideo || isPreparingCoverFrames)
+            .disabled(isPreparingVideo || isPreparingCoverFrames || isLibraryBusy)
 
             if item.holdFrameTime != nil {
                 Button {
@@ -366,6 +427,7 @@ struct ViewerView: View {
                 } label: {
                     Label("恢复原封面", systemImage: "arrow.uturn.backward.circle")
                 }
+                .disabled(isLibraryBusy)
             }
         }
         .font(.caption)
@@ -385,23 +447,60 @@ struct ViewerView: View {
             Button(action: onPrevious) {
                 Label("上一张", systemImage: "chevron.left")
             }
-            .disabled(!canGoPrevious)
+            .disabled(!canGoPrevious || isLibraryBusy)
+            .keyboardShortcut(.leftArrow, modifiers: [])
 
             Button(action: onNext) {
                 Label("下一张", systemImage: "chevron.right")
             }
-            .disabled(!canGoNext)
+            .disabled(!canGoNext || isLibraryBusy)
+            .keyboardShortcut(.rightArrow, modifiers: [])
 
             Divider().frame(height: 20)
 
             Button(action: toggleVideo) {
-                Label(showingVideo ? "显示照片" : "播放实况", systemImage: showingVideo ? "photo" : "play.fill")
+                Label(videoToggleTitle, systemImage: showingVideo ? "photo" : "play.fill")
             }
-            .disabled(item.liveStatus != .live || isPreparingVideo)
+            .disabled(canPlayVideo == false || isPreparingVideo || isLibraryBusy)
+
+            Divider().frame(height: 20)
+
+            Button(action: zoomOut) {
+                Label("缩小", systemImage: "minus.magnifyingglass")
+            }
+            .disabled(canZoomImage == false || zoomScale <= minimumZoom + 0.001)
+            .keyboardShortcut("-", modifiers: .command)
+
+            Text("\(Int((zoomScale * 100).rounded()))%")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 42)
+
+            Button(action: zoomIn) {
+                Label("放大", systemImage: "plus.magnifyingglass")
+            }
+            .disabled(canZoomImage == false || zoomScale >= maximumZoom - 0.001)
+            .keyboardShortcut("+", modifiers: .command)
+
+            Button(action: resetZoom) {
+                Label("适合窗口", systemImage: "arrow.up.left.and.down.right")
+            }
+            .disabled(canZoomImage == false || abs(zoomScale - 1) < 0.001)
+            .keyboardShortcut("0", modifiers: .command)
 
             Button(action: onToggleSelection) {
                 Label(item.isSelected ? "取消精选" : "加入精选", systemImage: item.isSelected ? "checkmark.circle.fill" : "circle")
             }
+            .disabled(isLibraryBusy)
+
+            Button(role: .destructive) {
+                stopVideo()
+                closeCoverFrameEditor()
+                onTrash()
+            } label: {
+                Label("移入废纸篓", systemImage: "trash")
+            }
+            .disabled(isLibraryBusy)
 
             Spacer()
             Button("返回图库") { onClose() }
@@ -418,6 +517,42 @@ struct ViewerView: View {
             return
         }
         playVideo()
+    }
+
+    private var canPlayVideo: Bool {
+        item.mediaKind == .video || item.liveStatus == .live
+    }
+
+    private var canZoomImage: Bool {
+        previewImage != nil && showingVideo == false && isEditingCoverFrame == false
+    }
+
+    private var videoToggleTitle: String {
+        if showingVideo {
+            return item.mediaKind == .video ? "显示封面" : "显示照片"
+        }
+        return item.mediaKind == .video ? "播放视频" : "播放实况"
+    }
+
+    private func zoomIn() {
+        setZoom(zoomScale * 1.25)
+    }
+
+    private func zoomOut() {
+        setZoom(zoomScale / 1.25)
+    }
+
+    private func resetZoom() {
+        setZoom(1)
+    }
+
+    private func setZoom(_ scale: Double) {
+        zoomScale = clampedZoom(scale)
+        gestureBaseZoom = zoomScale
+    }
+
+    private func clampedZoom(_ scale: Double) -> Double {
+        min(maximumZoom, max(minimumZoom, scale))
     }
 
     private func addCurrentTag() {
@@ -448,7 +583,7 @@ struct ViewerView: View {
     }
 
     private func autoPlayIfNeeded() {
-        guard item.liveStatus == .live, didAutoPlayVideo == false else { return }
+        guard canPlayVideo, didAutoPlayVideo == false else { return }
         didAutoPlayVideo = true
         playVideo()
     }
@@ -456,6 +591,11 @@ struct ViewerView: View {
     private func loadPlayableVideoURL() async throws -> URL {
         if let preparedVideoURL {
             return preparedVideoURL
+        }
+
+        if item.mediaKind == .video {
+            preparedVideoURL = item.url
+            return item.url
         }
 
         let sourceURL = item.url
@@ -473,6 +613,7 @@ struct ViewerView: View {
     private func playVideo() {
         if let player {
             closeCoverFrameEditor()
+            resetZoom()
             showingVideo = true
             player.seek(to: .zero)
             player.play()
@@ -490,13 +631,14 @@ struct ViewerView: View {
                 let newPlayer = AVPlayer(url: videoURL)
                 player = newPlayer
                 closeCoverFrameEditor()
+                resetZoom()
                 showingVideo = true
                 newPlayer.play()
             } catch is CancellationError {
                 // 关闭查看器时无需提示。
             } catch {
                 errorMessage = error.localizedDescription
-                AppLogger.error("播放实况失败：\(sourceURL.path)", error: error)
+                AppLogger.error("播放媒体失败：\(sourceURL.path)", error: error)
             }
             isPreparingVideo = false
             videoTask = nil

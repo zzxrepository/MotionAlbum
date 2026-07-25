@@ -16,6 +16,9 @@ let package = Package(
             path: "Sources/LivePhotoLooker",
             swiftSettings: [
                 .swiftLanguageMode(.v5)
+            ],
+            linkerSettings: [
+                .linkedLibrary("sqlite3")
             ]
         )
     ]
