@@ -1,74 +1,131 @@
 # 灵动相册（MotionAlbum）
 
-灵动相册是一款面向 macOS 的实况照片查看与筛选工具。它可以读取从手机导出的原始照片文件，识别其中的动态视频资源，让你在电脑上预览实况、筛选照片、添加标签，并把精选原图同步回安卓手机，继续以“实况照片”的方式在微信等手机应用里发送。
+灵动相册是一款面向 macOS 与 Windows 的本地实况照片管理工具。它读取手机导入电脑后的原始照片和配套视频，识别 Apple Live Photo、华为/荣耀动态照片以及常见 Android Motion Photo，在桌面端完成浏览、播放、筛选、标记、导出和整理。
 
-这个项目最初是为了解决一个很具体的问题：手机里的实况照片导到电脑后看起来只是普通 JPG，系统图片查看器无法播放动态部分；筛选后再发给别人时，也常常变成静态图片。灵动相册的目标不是改造原图，而是安全地识别、查看、整理和回传原始文件。
+应用默认只读取原始媒体，不会为了预览而改写 JPG、HEIC、MOV 或 MP4。实况视频需要拆出时，会写入独立的本地缓存。
 
-## 功能特性
+## 主要能力
 
-- 读取荣耀 / 华为导出的原始 JPG，不拆包、不改写原文件。
-- 支持苹果 Live Photo 常见的 `IMG_0001.HEIC + IMG_0001.MOV` 同名配对结构。
-- 自动识别 JPG 尾部内嵌的 MP4 实况视频，或照片旁边的同名 MOV/MP4，并在缩略图上标记 LIVE；目录里的独立 MOV/MP4/M4V 也会作为普通视频显示和播放。
-- 类似手机相册的照片墙浏览，支持通过滑杆或触控板捏合调整缩略图大小；小缩略图模式只显示必要角标，大缩略图模式会展开文件名、大小和标签。
-- 支持按拍摄时间新到旧、拍摄时间旧到新、修改时间、文件名排序；按时间分组浏览时会根据缩略图大小自动调整粒度：小缩略图按月聚合，大缩略图按天展示。图库支持一键回到顶部，查看器返回图库时会定位到刚刚查看的照片。
-- 搜索支持照片名、标签、地点名称、目录名、路径、设备型号等字段；如果照片内含 GPS，会在需要时后台解析成大致地点名称再参与搜索。
-- 实况 / 视频 / 全部 / 精选等筛选。
-- 双击打开大图后在主窗口内查看，不额外弹出照片窗口；支持自动播放实况和普通视频、上一张 / 下一张、切换静态图与动态内容。
-- 查看器支持放大、缩小、适合窗口和触控板捏合缩放，只影响预览显示，不改写原文件。
-- 实况播放结束后回到封面图；也可以像手机相册一样进入封面帧编辑，在胶片缩略条中左右滑动选择停留帧。
-- 给照片添加标签，并按标签快速筛选。
-- 支持单张或精选批量移入 macOS 废纸篓；如果外接硬盘不支持系统废纸篓，会改为移入同目录下隐藏的 `.MotionAlbumTrash` 安全删除区，方便恢复；如果照片有同名 MOV/MP4 实况视频，会和原图一起移动。
-- 解析并展示照片里的 EXIF 元信息，例如设备型号、拍摄时间、像素尺寸；如果照片保存了 GPS，灵动相册会尽量反解析成大致地点名称，解析不到时不显示坐标。
-- 打开历史目录，目录移动或失效时会提示，避免直接崩溃。
-- 顶部工具栏支持轮播短句；左侧底部展示作者署名。公开默认短句以公版诗词和自拟句为主，也可以在本机添加自己的语句。
-- 导出当前筛选结果，保留原始照片文件；如果存在苹果同名 MOV/MP4，也会一起导出。
-- 通过 adb 把精选照片复制到手机 `DCIM/MotionAlbum`，便于在手机微信里继续按实况照片发送。
-- 针对大量图片目录做了流式扫描、缩略图解码限流、后台实况识别、后台 EXIF 索引、SQLite 持久化图库索引和磁盘缩略图缓存；同一大目录再次打开时会先显示上次索引结果，再后台核对变更，尽量避免一次性读入大文件造成卡顿或崩溃。
+- 扫描一个目录及其子目录，统一展示照片、实况照片和独立视频。
+- 识别图片尾部内嵌 MP4 的 Android / 华为系动态照片。
+- 将 Apple 图片资源与 MOV 配对，在图库中合并为一张 Live Photo。
+- 在主窗口内播放实况和普通视频，并在静态封面与动态内容之间切换。
+- 使用方向键或 `WASD` 浏览，按 `Enter` 打开当前照片。
+- 通过缩放按钮、滑杆、`Ctrl` + 滚轮或触控缩放调整照片墙；最大档按单张居中展示。
+- 按拍摄时间、修改时间或文件名排序，可按月或按日分组。
+- 按全部、实况、视频、我喜欢和具体标签筛选。
+- 搜索文件名、目录、标签、设备型号、拍摄软件、地点或 GPS 坐标。
+- 读取 EXIF 拍摄时间、像素尺寸、设备、软件和 GPS 信息。
+- 使用爱心维护“我喜欢”，不改变照片内容。
+- 为照片添加本地标签，并按标签统计和筛选。
+- 保存实况播放结束时的停留画面；该设置只影响本机预览。
+- 导出当前筛选中的原始资源，Apple Live Photo 的配套 MOV 会一起导出。
+- 将“我喜欢”的原始资源通过 adb 同步到安卓手机的 `DCIM/MotionAlbum`。
+- 将单张或批量媒体移入系统废纸篓 / 回收站，并同时处理配套视频。
+- 记住最近打开的目录、侧边栏状态、标签、喜欢状态和停留画面。
 
-## 支持平台
+## 支持的实况格式
 
-| 平台 | 状态 | 说明 |
+| 来源 | 电脑中常见结构 | 识别方式 |
 | --- | --- | --- |
-| macOS | 当前主线 | 原生 SwiftUI 应用，优先维护 |
-| Windows | 预览保留 | WPF 版本仍不完善，后续再继续开发 |
+| Apple | `HEIC/JPG + MOV` | 优先匹配 Apple 内容标识 UUID，元数据缺失时按同目录同名降级配对 |
+| 华为 / 荣耀 JPG | JPG 后附 MP4 及厂商尾部数据 | 定位并校验 MP4 `ftyp` 和 box 范围，只提取真实视频部分 |
+| 华为 / 荣耀 HEIC | HEIC 容器后附第二段 MP4 | 结合 `LIVE_` 尾标与第二个有效 `ftyp` 定位视频 |
+| 小米 / Google / 新版 vivo | Motion Photo V1 / V2 | 解析 XMP `MicroVideoOffset`、`MediaDataOffset` 或容器 `Item:Length` |
+| OPPO | Motion Photo V2 | 解析容器项目，并使用 `OpCamera:VideoLength` 限定纯视频范围 |
+| 通用内嵌格式 | JPG 后附标准 MP4 | 校验 `ftyp`、`moov`、`mdat` 等 box 后提取 |
+| 普通视频 | MOV / MP4 / M4V | 作为独立媒体显示和播放 |
 
-> 目前推荐在 macOS 上使用。Windows 目录会保留在仓库里，但暂时不要把它当作正式发行版。
+目前扫描的图片扩展名包括 JPG、JPEG、HEIC、HEIF、PNG、WebP、TIFF 和 BMP。内嵌实况解析主要针对 JPG/JPEG 与 HEIC/HEIF；其他图片格式按静态照片处理。
 
-## 快速开始
+## 工作原理
 
-### 环境要求
+### 1. 扫描与配对
+
+应用先枚举受支持的图片和视频。Apple 资源会读取图片与 MOV 中的候选标识符进行一对一配对；只有双方均缺少可用 Apple 标识时，才使用同目录、同文件名作为降级规则。已经配对的 MOV 不会在图库中重复出现。
+
+### 2. 实况检测
+
+对于单文件动态照片，解析器读取文件头尾的有限窗口，识别 XMP 偏移、厂商尾标和 MP4 box。所有候选偏移都会再次校验，避免把普通图片中的文本片段误判为视频。
+
+### 3. 安全提取与播放
+
+播放器需要独立视频时，应用按照已经验证的偏移和长度精确复制视频数据到缓存，不会把华为/荣耀防抖数据、`LIVE_` 尾标或 OPPO trailer 一并交给播放器，也不会修改原图。
+
+- macOS 使用 AVFoundation / AVKit 播放。
+- Windows 使用 LibVLCSharp 播放。
+
+播放结束默认回到原始静态封面。如果设置了停留画面，应用会在播放结束后回到保存的时间点并暂停。
+
+### 4. 元数据与本地索引
+
+缩略图、EXIF 和实况识别在后台限流处理，避免同时读取大量原图。
+
+- macOS 使用 SQLite 保存图库索引。
+- Windows 使用带文件大小、修改时间和配套视频指纹的本地 JSON 索引。
+
+文件发生变化后，旧索引会自动失效并重新识别。标签、喜欢状态和停留画面使用独立的本地状态文件保存。
+
+## 平台实现
+
+| 平台 | 界面与运行时 | 播放与元数据 |
+| --- | --- | --- |
+| macOS 13+ | SwiftUI / Swift Package Manager | AVFoundation、ImageIO、Core Location、SQLite |
+| Windows 10/11 | WPF / .NET 10 | LibVLCSharp、Windows Imaging Component、Shell Thumbnail API |
+
+两端采用相同的媒体模型和整理逻辑，并使用各平台原生控件呈现界面。停留画面编辑在 macOS 中使用胶片候选帧，在 Windows 中使用可实时预览的时间轴。
+
+## 使用方法
+
+1. 打开应用，选择手机照片所在目录。
+2. 按需要启用“包含子文件夹”，等待后台扫描与识别。
+3. 带有 `LIVE` 标记的照片可以播放动态内容，独立视频显示 `VIDEO` 标记。
+4. 单击照片会将它设为当前查看项；双击或按 `Enter` 进入查看器。
+5. 使用爱心加入“我喜欢”，或在查看器中添加标签。
+6. 使用侧边栏筛选、顶部搜索和排序控件缩小范围。
+7. 需要备份时导出当前筛选；需要整理时将单张或“我喜欢”移入废纸篓 / 回收站。
+8. 连接已启用 USB 调试的安卓手机后，可将“我喜欢”同步到 `DCIM/MotionAlbum`。
+
+### 常用操作
+
+| 操作 | 图库 | 查看器 |
+| --- | --- | --- |
+| 上下左右移动 | 方向键 / `WASD` | `←` / `→` 切换前后照片 |
+| 打开照片 | 双击或 `Enter` | — |
+| 返回图库 | — | `Esc` |
+| 缩放 | 按钮、滑杆、Windows `Ctrl` + 滚轮 | 按钮、滚轮；macOS `⌘` / Windows `Ctrl` + `+` / `-` |
+| 恢复查看器缩放 | — | macOS `⌘` / Windows `Ctrl` + `0` |
+| 收起侧边栏 | macOS `⌘B` / Windows `Ctrl+B` | 顶部侧边栏按钮 |
+| 打开目录 | macOS `⌘O` / Windows `Ctrl+O` | 顶部打开目录按钮 |
+| 刷新目录 | Windows `Ctrl+R` | — |
+| 导出当前筛选 | Windows `Ctrl+E` | — |
+
+照片右键菜单提供查看、加入/取消喜欢、在 Finder / 文件资源管理器中显示和移入废纸篓 / 回收站等操作。
+
+## 构建 macOS 版本
+
+环境要求：
 
 - macOS 13 Ventura 或更高版本
 - Xcode Command Line Tools
-- 如需同步到手机：Android Debug Bridge（adb）
-
-安装 Xcode Command Line Tools：
+- 可选：Android Debug Bridge，用于同步安卓手机
 
 ```bash
 xcode-select --install
-```
+brew install android-platform-tools   # 可选
 
-安装 adb：
-
-```bash
-brew install android-platform-tools
-```
-
-### 构建 macOS 应用
-
-```bash
 cd LivePhotoLookerMac
 ./build_app.sh
 open "dist/灵动相册.app"
 ```
 
-`build_app.sh` 会先运行自检，再构建 Release 版本、生成 app 图标并做本地签名。生成的应用位于：
+`build_app.sh` 会先运行自检，再构建 Release 应用并使用本机临时签名。产物位于：
 
 ```text
 LivePhotoLookerMac/dist/灵动相册.app
 ```
 
-如果你只是想验证源码是否能通过编译：
+只验证源码时可以运行：
 
 ```bash
 cd LivePhotoLookerMac
@@ -76,134 +133,131 @@ swift build -c release -Xswiftc -warnings-as-errors
 swift run MotionAlbum --self-test
 ```
 
-`samples/` 是本地样本目录，默认不会进入 Git 仓库。存在样本时，自检会校验荣耀实况样本；没有样本时，会跳过样本解析，只运行基础稳定性测试。
-
-## 发布版本与安装包
-
-当前建议版本号：`v0.1.0`。
-
-这个版本已经具备核心功能，但仍属于第一个公开预览版，所以不建议直接叫 `1.0.0`。后续可以按这个节奏编号：
-
-- `0.1.1`：只修 bug，不加明显新功能。
-- `0.2.0`：增加新功能，例如更完整的设备同步、批量性能优化。
-- `1.0.0`：功能边界稳定，普通用户安装和使用流程比较可靠。
-
-生成 GitHub Release 可上传的安装包：
+生成 ZIP、可用时生成 DMG，并写出 SHA256：
 
 ```bash
 cd LivePhotoLookerMac
 ./package_release.sh
 ```
 
-脚本会生成：
+当前脚本使用临时签名，没有进行 Apple Developer ID 签名和 notarization。分发给其他用户时，macOS 可能提示无法验证开发者。
 
-```text
-LivePhotoLookerMac/release/MotionAlbum-v0.1.0-macOS.dmg
-LivePhotoLookerMac/release/MotionAlbum-v0.1.0-macOS.zip
-LivePhotoLookerMac/release/SHA256SUMS.txt
+## 构建 Windows 版本
+
+环境要求：
+
+- Windows 10/11
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+- 建议安装 Windows HEIF 图像扩展，用于显示 HEIC/HEIF 静态封面
+- 可选：Android platform-tools，用于同步安卓手机
+
+在 PowerShell 中运行：
+
+```powershell
+cd LivePhotoViewer.WPF
+.\build_windows.ps1 -Runtime win-x64 -Package
 ```
 
-如果当前 macOS 环境无法调用 `hdiutil` 创建磁盘镜像，脚本会保留 `.zip` 安装包和 `SHA256SUMS.txt`，不会中断整个发布流程。
+32 位 Windows 可以使用：
 
-发布到 GitHub 时，建议创建 tag `v0.1.0`，然后在 GitHub Release 中上传上面的 `.dmg`、`.zip` 和 `SHA256SUMS.txt`。
+```powershell
+.\build_windows.ps1 -Runtime win-x86 -Package
+```
 
-> 当前脚本使用本机临时签名，尚未做 Apple Developer ID 签名和 notarization。公开给陌生用户下载时，macOS 可能会提示“无法验证开发者”。如果要做更正式的公开发行，后续建议补上 Developer ID 签名和 notarization 流程。
+脚本会运行跨平台解析自检，然后生成无需另装 .NET Runtime 的自包含目录和 ZIP：
 
-## 使用说明
+```text
+LivePhotoViewer.WPF/dist/MotionAlbum-win-x64/MotionAlbum.exe
+LivePhotoViewer.WPF/dist/MotionAlbum-v<version>-win-x64.zip
+LivePhotoViewer.WPF/dist/MotionAlbum-v<version>-win-x64.zip.sha256
+```
 
-1. 在首页点击“打开文件夹”，选择从手机导出的照片或视频目录。默认会包含子文件夹，适合外接硬盘或旅行照片库这类多级目录。
-2. 等待后台识别完成。实况照片会显示 LIVE 标记，普通视频会显示 VIDEO 标记。
-3. 双击照片或视频进入主窗口内的查看界面，实况和普通视频会自动播放，也可以切回静态封面；左右方向键可切换上一张 / 下一张。
-4. 对喜欢的照片勾选“精选”，或添加自定义标签。
-5. 使用左侧筛选、标签视图或顶部搜索框缩小范围；搜索框可以输入文件名、标签、地点、目录名或设备型号。
-6. 不想保留的照片可以右键卡片或在查看器中点击“移入废纸篓”；批量清理时先勾选精选，再点击“移入废纸篓精选”。外接硬盘没有废纸篓时，文件会进入同目录隐藏的 `.MotionAlbumTrash` 安全删除区。
-7. 需要备份时，点击“导出当前筛选”。
-8. 需要发微信实况照片时，先连接安卓手机并开启 USB 调试，再点击“同步精选到安卓手机”。灵动相册会把原始照片文件复制到手机 `DCIM/MotionAlbum`，之后请在手机微信里从相册选择发送。
+Windows 11 ARM64 当前使用 `win-x64` 包和系统 x64 模拟层；项目依赖的 LibVLC Windows 包暂未提供原生 ARM64 播放库。
 
-### 关于封面帧
+## 自检与样本
 
-默认情况下，灵动相册显示的是手机导出的静态照片本身，也就是原始封面图；它不是随机帧，也不是固定取视频 1.5 秒的位置。进入“编辑封面帧”后，你可以从实况视频里选一个时间点作为灵动相册里的停留帧。这个设置只保存在本机，不会改写原始 JPG/HEIC/MOV 文件。
+本地 `samples/` 用于放置不同品牌的真实测试资源，并已加入 `.gitignore`，不会提交到仓库。
 
-### 关于苹果 Live Photo
+Windows 解析自检也可以在 macOS 或 Linux 上运行，因为测试项目只链接跨平台解析和索引代码：
 
-苹果 Live Photo 通常由两部分组成：
+```bash
+dotnet run \
+  --project LivePhotoViewer.WPF.SelfTest/LivePhotoViewer.WPF.SelfTest.csproj \
+  -c Release -- samples
+```
+
+当前自检覆盖：
+
+- Android Motion Photo V1。
+- Android Motion Photo V2。
+- OPPO 视频长度处理。
+- 华为/荣耀 JPG 与 HEIC 定位。
+- Apple HEIC/JPG 与 MOV 配对。
+- MP4 精确范围提取。
+- 静态照片防误判。
+- 图库索引恢复与文件变化后的缓存失效。
+
+## Apple Live Photo 与微信保存的 JPG
+
+Apple Live Photo 通常包含一张图片和一个配套 MOV：
 
 ```text
 IMG_0001.HEIC
 IMG_0001.MOV
 ```
 
-这两个文件需要放在同一个目录下，并保持同名。灵动相册会把它们识别成同一张实况照片。只导出成单独 `.jpg` 的文件通常已经丢失动态视频，无法再凭空恢复成实况。
+如果通过微信“保存图片”后只得到单独 JPG，通常表示图片已经被重新编码，配套 MOV 或内嵌视频已经丢失。此时文件中没有可以解码的动态数据，应用只能把它当作静态照片。只有以下情况仍能播放：
 
-### 关于轮播短句
+- JPG 本身仍包含可验证的内嵌 MP4。
+- 原始 HEIC/JPG 旁边仍保留配套 MOV。
+- 导出或传输方式完整保留了 Live Photo 的两项资源。
 
-灵动相册顶部工具栏会轮播一些短句。默认内置短句主要使用公版诗词和项目自拟句，适合公开发布。
+## 本地数据与隐私
 
-如果你想在自己电脑上添加私人喜欢的句子，可以创建这个文件：
+- 应用没有照片上传服务，原始照片和配套视频只在本机读取、缓存、复制或按用户操作移入废纸篓 / 回收站。
+- macOS 的地点名称解析可能调用系统地理编码服务，但不会上传照片文件。
+- adb 同步只在用户主动执行时，将所选原始资源复制到已连接设备。
+- macOS 状态位于 `~/Library/Application Support/MotionAlbum/`。
+- Windows 状态位于 `%APPDATA%\MotionAlbum\`，缩略图、视频和图库索引位于临时目录或 `%LOCALAPPDATA%\MotionAlbum\`。
+- 自定义轮播短句可以写入对应状态目录中的 `quotes.txt`，每行格式为 `句子` 或 `句子 — 来源`。
+- 外接磁盘不支持系统废纸篓 / 回收站时，应用会回退到原文件同卷的隐藏 `.MotionAlbumTrash` 安全删除区，不执行不可恢复的直接删除。
 
-```text
-~/Library/Application Support/MotionAlbum/quotes.txt
-```
+## 已知限制
 
-每行一句即可，也可以使用下面的格式带上来源：
+- 已被聊天软件或图片编辑器重新编码为纯静态 JPG 的实况照片无法恢复动态内容。
+- Windows 未安装 HEIF 图像扩展时，仍可识别 Apple 图片与 MOV 的配对，但 HEIC 静态封面可能无法显示。
+- 不同手机系统版本可能调整厂商私有尾部结构；遇到未识别样本时，应保留未经编辑的原始文件用于分析。
+- “我喜欢”、标签和停留画面是应用本地状态，不会写回照片元数据，也不会自动同步到另一台电脑。
+- 大型图库已有后台限流和缓存，但十万级媒体仍需要进一步的分页与虚拟化优化。
 
-```text
-句子 — 来源
-```
-
-本地 `quotes.txt` 不会进入 Git 仓库，也不会上传。若添加歌词，请确认只用于个人本机使用，公开发布版本不建议内置完整受版权保护歌词。
-
-## 隐私与安全
-
-- 灵动相册不会上传照片，也没有云端服务。
-- 原始照片和配套视频只会被读取、复制，不会被改写。
-- 删除操作默认移入 macOS 废纸篓，不做不可恢复的硬删除；移动成功后会清理本机保存的精选、标签和封面帧记录。
-- 标签、精选状态、历史目录保存在本机应用支持目录。
-- 临时提取的视频缓存只用于本机播放，可随系统临时文件清理。
-- `samples/` 默认被 `.gitignore` 忽略，避免把个人照片误传到公开仓库。
-
-## 目录结构
+## 项目结构
 
 ```text
 .
-├── LivePhotoLookerMac/      # 当前 macOS 主版本
-├── LivePhotoViewer.WPF/     # Windows WPF 预览版，暂未正式维护
-├── legacy/                  # 早期脚本和实验代码，仅作参考
-├── samples/                 # 本地测试照片，默认忽略，不提交
-├── README.md
-└── .gitignore
+├── LivePhotoLookerMac/           # macOS SwiftUI 应用、解析器与打包脚本
+├── LivePhotoViewer.WPF/          # Windows WPF 应用、解析器与发布脚本
+├── LivePhotoViewer.WPF.SelfTest/ # Windows/跨平台解析自检
+├── legacy/                       # 早期实验代码
+├── samples/                      # 本地真实样本，不提交
+├── CHANGELOG.md
+└── README.md
 ```
 
-## 大照片库性能路线
+关键实现：
 
-灵动相册当前已经把重操作拆成了几层：先扫描基础文件列表并显示界面，缩略图按需解码并落盘缓存，实况识别和 EXIF/GPS 元信息在后台低并发补齐；同一目录会写入 SQLite 图库索引，下次打开时先用索引快速展示，再后台核对目录变更。
+- macOS 解析器：`LivePhotoLookerMac/Sources/LivePhotoLooker/Services/LivePhotoParser.swift`
+- macOS 图库状态：`LivePhotoLookerMac/Sources/LivePhotoLooker/ViewModels/PhotoLibrary.swift`
+- Windows 解析器：`LivePhotoViewer.WPF/Core/LivePhotoExtractor.cs`
+- Windows 主界面：`LivePhotoViewer.WPF/MainWindow.xaml` 与 `MainWindow.xaml.cs`
+- Windows 自检：`LivePhotoViewer.WPF.SelfTest/Program.cs`
 
-如果要长期支撑数十万张、1T 级照片库，后续还需要继续演进到更完整的图库索引架构：
+## 技术参考
 
-- 继续扩展 SQLite 索引，把标签、地点反解析结果、封面帧和搜索字段统一进入数据库，减少多份本地状态文件。
-- 缩略图分层缓存已经接入第一版，后续可按小图、中图、查看器预览图做更细的生成、淘汰和预取策略。
-- 目录扫描做增量更新：通过文件路径、大小、修改时间和 inode/file resource identifier 判断新增、移动、删除。
-- 搜索从当前内存过滤逐步升级为数据库查询，并为文件名、标签、地点、目录建立更完整的索引。
-- 图库视图继续演进为分页 / 虚拟化数据源，避免 10 万级以上照片一次性生成过多 SwiftUI 视图状态。
-- 后台任务统一进入可取消队列，切目录、快速滚动、删除、导出时优先保证界面响应。
-
-## 开发路线
-
-- 完善 macOS 版本的批量性能测试和真实设备同步测试。
-- 增加更明确的 GitHub Release 打包流程。
-- 继续完善 SQLite 持久化图库索引，推进分页加载、数据库搜索和更精细的增量更新。
-- 继续打磨 Windows WPF 版本。
-- 研究更多品牌和更多“动态照片 / 实况照片”文件结构。
-
-## 参考资料
-
-- [GitHub Docs: About READMEs](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-readmes)
-- [GitHub Docs: Managing releases in a repository](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository)
-- [Semantic Versioning](https://semver.org/)
+- [Live Photo Box](https://github.com/LengxiQwQ/live-photo-box)
+- [MotionTrans](https://github.com/Huakira/MotionTrans)
+- [MotionPhoto2AppleLivePhoto](https://github.com/Albresky/MotionPhoto2AppleLivePhoto)
+- [LimitPoint/LivePhoto](https://github.com/LimitPoint/LivePhoto)
+- [live-photo-conv](https://github.com/wszqkzqk/live-photo-conv)
 - [Android Developers: Android Debug Bridge](https://developer.android.com/tools/adb)
-- [Apple Developer Documentation: Core Data Fetch Requests](https://developer.apple.com/documentation/coredata/nsfetchrequest)
-- [digiKam Documentation: Database Settings](https://docs.digikam.org/en/setup_application/database_settings.html)
-- [PhotoPrism User Guide: Index](https://docs.photoprism.app/user-guide/library/index/)
-- [PhotoPrism User Guide: Storage](https://docs.photoprism.app/user-guide/library/originals/)
-- [荣耀支持：实况照片相关说明](https://www.honor.com/cn/support/content/zh-cn15868878/)
-- [wszqkzqk/live-photo-conv](https://github.com/wszqkzqk/live-photo-conv)
+
+版本变更记录见 [CHANGELOG.md](CHANGELOG.md)。
