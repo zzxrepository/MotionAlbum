@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="..\LivePhotoViewer.WPF\Core\LivePhotoExtractor.cs" Link="Core\LivePhotoExtractor.cs" />
+    <Compile Include="..\LivePhotoViewer.WPF\Core\LibraryIndexStore.cs" Link="Core\LibraryIndexStore.cs" />
+    <Compile Include="..\LivePhotoViewer.WPF\Models\PhotoItem.cs" Link="Models\PhotoItem.cs" />
+  </ItemGroup>
+</Project>

@@ -4,13 +4,15 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <Nullable>enable</Nullable>
+    <AssemblyName>MotionAlbum</AssemblyName>
     <ApplicationIcon>Assets/app_icon.ico</ApplicationIcon>
-    <AssemblyTitle>灵动相册 MotionAlbum Windows Preview</AssemblyTitle>
+    <AssemblyTitle>灵动相册 MotionAlbum Windows</AssemblyTitle>
     <Product>灵动相册 MotionAlbum</Product>
     <Company>神马都会亿点点的毛毛张</Company>
     <Authors>神马都会亿点点的毛毛张</Authors>
-    <Version>0.1.0-preview.1</Version>
+    <Version>0.3.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

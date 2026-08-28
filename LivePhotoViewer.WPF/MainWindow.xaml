@@ -2,461 +2,305 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vlc="clr-namespace:LibVLCSharp.WPF;assembly=LibVLCSharp.WPF"
-        xmlns:models="clr-namespace:LivePhotoViewer.WPF.Models"
-        Title="灵动相册 MotionAlbum（Windows 预览版）"
-        Height="800"
-        Width="1400"
+        Title="灵动相册 MotionAlbum"
+        Height="860"
+        Width="1480"
+        MinHeight="700"
+        MinWidth="1080"
         Icon="Assets/app_icon.ico"
         Background="{DynamicResource WindowBgBrush}"
         Foreground="{DynamicResource TextBrush}"
-        WindowStartupLocation="CenterScreen">
+        WindowStartupLocation="CenterScreen"
+        PreviewKeyDown="MainWindow_PreviewKeyDown">
 
     <Window.Resources>
-        <!-- Cursor 风格工具栏按钮：图标在上，文字在下 -->
-        <Style x:Key="ToolbarButtonStyle" TargetType="Button">
+        <Style x:Key="FlatButtonStyle" TargetType="Button">
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Padding" Value="10,4"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="11,7"/>
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border Background="{TemplateBinding Background}"
-                                CornerRadius="10"
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="7"
                                 Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center"
-                                              VerticalAlignment="Center"/>
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
                         </Border>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="{DynamicResource ButtonHoverBgBrush}"/>
-                </Trigger>
-            </Style.Triggers>
-        </Style>
-
-        <Style x:Key="ToolbarToggleButtonStyle" TargetType="ToggleButton">
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Padding" Value="10,4"/>
-            <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="ToggleButton">
-                        <Border Background="{TemplateBinding Background}"
-                                CornerRadius="10"
-                                Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center"
-                                              VerticalAlignment="Center"/>
-                        </Border>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="{DynamicResource ButtonHoverBgBrush}"/>
-                </Trigger>
-                <Trigger Property="IsChecked" Value="True">
-                    <Setter Property="Background" Value="{DynamicResource ToggleCheckedBgBrush}"/>
-                    <Setter Property="Foreground" Value="{DynamicResource FavoriteBrush}"/>
-                </Trigger>
-            </Style.Triggers>
-        </Style>
-
-        <!-- 标签小圆角样式 -->
-        <Style x:Key="TagChipStyle" TargetType="Border">
-            <Setter Property="Background" Value="{DynamicResource HoverBorderBrush}"/>
-            <Setter Property="CornerRadius" Value="8"/>
-            <Setter Property="Padding" Value="8,3"/>
-            <Setter Property="Margin" Value="0,0,6,0"/>
-        </Style>
-
-        <!-- TreeView 样式 -->
-        <Style x:Key="DirTreeViewStyle" TargetType="TreeView">
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
-            <Setter Property="Padding" Value="4"/>
-        </Style>
-
-        <Style x:Key="DirTreeItemStyle" TargetType="TreeViewItem">
-            <Setter Property="Foreground" Value="{DynamicResource SubTextBrush}"/>
-            <Setter Property="Padding" Value="2"/>
-            <Setter Property="Margin" Value="0,1"/>
-            <Setter Property="FontSize" Value="12"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="TreeViewItem">
-                        <StackPanel>
-                            <Border x:Name="Bd"
-                                   Background="{TemplateBinding Background}"
-                                   BorderBrush="{TemplateBinding BorderBrush}"
-                                   BorderThickness="{TemplateBinding BorderThickness}"
-                                   CornerRadius="4"
-                                   Padding="6,4">
-                                <ContentPresenter ContentSource="Header"
-                                                  HorizontalAlignment="Left"
-                                                  VerticalAlignment="Center"/>
-                            </Border>
-                            <ItemsPresenter x:Name="ItemsHost" Margin="12,0,0,0"/>
-                        </StackPanel>
                         <ControlTemplate.Triggers>
-                            <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource HoverBorderBrush}"/>
-                                <Setter Property="Foreground" Value="White"/>
-                            </Trigger>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ButtonHoverBgBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.42"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <Style x:Key="SidebarRowStyle" TargetType="Button" BasedOn="{StaticResource FlatButtonStyle}">
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Padding" Value="9,7"/>
+            <Setter Property="Margin" Value="0,1"/>
+        </Style>
+
+        <Style x:Key="MetricButtonStyle" TargetType="Button" BasedOn="{StaticResource FlatButtonStyle}">
+            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="Margin" Value="0,0,7,0"/>
+            <Setter Property="Background" Value="{DynamicResource CardBgBrush}"/>
+        </Style>
+
+        <Style x:Key="TagChipStyle" TargetType="Border">
+            <Setter Property="Background" Value="{DynamicResource ButtonHoverBgBrush}"/>
+            <Setter Property="CornerRadius" Value="7"/>
+            <Setter Property="Padding" Value="8,3"/>
+            <Setter Property="Margin" Value="0,0,6,0"/>
+        </Style>
     </Window.Resources>
 
-    <Grid x:Name="RootGrid">
-        <!-- ========== 模式 A: 缩略图网格 ========== -->
-        <Grid x:Name="GridMode">
+    <Grid x:Name="RootGrid" Background="{DynamicResource WindowBgBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="48"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- VS Code 风格顶栏 -->
+        <Border Grid.Row="0" Background="{DynamicResource ToolbarBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1">
+            <Grid Margin="10,5">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="360"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Button x:Name="BtnToggleSidebar" Grid.Column="0" Content="☰" Width="34" Click="BtnToggleSidebar_Click" ToolTip="显示/隐藏侧边栏 (Ctrl+B)" Style="{StaticResource FlatButtonStyle}"/>
+                <Button Grid.Column="1" Content="📂" Width="38" Margin="6,0" Click="BtnOpenFolder_Click" ToolTip="打开照片文件夹" Style="{StaticResource FlatButtonStyle}"/>
+                <TextBlock x:Name="QuoteText" Grid.Column="2" Text="❝  把时间折好，放进相册  ·  灵动相册" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource SubTextBrush}" FontSize="12"/>
+                <Border Grid.Column="3" Background="{DynamicResource CardBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="9" Margin="8,0">
+                    <Grid>
+                        <TextBlock x:Name="SearchHintText" Text="搜索文件名、标签、地点或目录" Foreground="{DynamicResource DimTextBrush}" Margin="12,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
+                        <TextBox x:Name="SearchBox" TextChanged="SearchBox_TextChanged" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource TextBrush}" CaretBrush="{DynamicResource TextBrush}" Padding="12,7" VerticalContentAlignment="Center" ToolTip="搜索文件名、标签、地点或目录"/>
+                    </Grid>
+                </Border>
+                <Button Grid.Column="4" x:Name="BtnThemeToggle" Click="BtnThemeToggle_Click" ToolTip="切换主题" Style="{StaticResource FlatButtonStyle}" Width="38">
+                    <TextBlock x:Name="ThemeIconText" Text="🌙" FontSize="16"/>
+                </Button>
+            </Grid>
+        </Border>
+
+        <!-- 图库工作区 -->
+        <Grid x:Name="GridMode" Grid.Row="1" Margin="8">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="240"/>
+                <ColumnDefinition x:Name="SidebarColumn" Width="246"/>
+                <ColumnDefinition Width="8"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- 左侧目录树 -->
-            <Border Grid.Column="0"
-                    Background="{DynamicResource CardBgBrush}"
-                    BorderBrush="{DynamicResource BorderBrush}"
-                    BorderThickness="0,0,1,0">
-                <Grid>
+            <Border x:Name="SidebarPanel" Grid.Column="0" Background="{DynamicResource CardBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="14">
+                <Grid Margin="12">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
-                    <!-- 目录树标题栏 -->
-                    <Border Grid.Row="0"
-                            Background="{DynamicResource ToolbarBgBrush}">
-                        <StackPanel Orientation="Horizontal" Margin="12,10">
-                            <TextBlock Text="📁" FontSize="14" VerticalAlignment="Center"/>
-                            <TextBlock Text="目录" Margin="6,0,0,0" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" Foreground="{DynamicResource TextBrush}"/>
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="4,3,4,14">
+                        <Image Source="Assets/app_icon.png" Width="44" Height="44" Stretch="UniformToFill"/>
+                        <StackPanel Margin="10,2,0,0">
+                            <TextBlock Text="灵动相册" FontSize="18" FontWeight="SemiBold"/>
+                            <TextBlock Text="MotionAlbum" FontSize="11" Foreground="{DynamicResource SubTextBrush}"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <Border Grid.Row="1" Background="{DynamicResource ToolbarBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="10" Padding="10" Margin="0,0,0,10">
+                        <StackPanel>
+                            <DockPanel>
+                                <TextBlock Text="▱  当前目录" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource SubTextBrush}"/>
+                                <Button DockPanel.Dock="Right" Content="↻" Width="26" Height="24" Click="BtnRefresh_Click" ToolTip="重新扫描" Style="{StaticResource FlatButtonStyle}"/>
+                            </DockPanel>
+                            <TextBlock x:Name="CurrentPathText" Text="尚未选择" Margin="0,10,0,8" TextWrapping="Wrap" MaxHeight="42" FontSize="11" Foreground="{DynamicResource SubTextBrush}"/>
+                            <Button Content="📂  切换文件夹" Click="BtnOpenFolder_Click" Style="{StaticResource FlatButtonStyle}" Background="#1677FF" Foreground="White" BorderThickness="0"/>
                         </StackPanel>
                     </Border>
 
-                    <TreeView x:Name="DirectoryTree"
-                              Grid.Row="1"
-                              Style="{StaticResource DirTreeViewStyle}">
-                        <TreeView.ItemContainerStyle>
-                            <Style TargetType="TreeViewItem" BasedOn="{StaticResource DirTreeItemStyle}">
-                                <EventSetter Event="Selected" Handler="DirectoryTree_SelectedItemChanged"/>
-                            </Style>
-                        </TreeView.ItemContainerStyle>
-                        <TreeView.ItemTemplate>
-                            <HierarchicalDataTemplate DataType="{x:Type models:DirectoryNode}"
-                                                      ItemsSource="{Binding Children}">
-                                <TextBlock Text="{Binding DisplayText}" FontSize="12"/>
-                            </HierarchicalDataTemplate>
-                        </TreeView.ItemTemplate>
-                    </TreeView>
+                    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <Border Background="{DynamicResource ToolbarBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="10" Padding="9" Margin="0,0,0,10">
+                                <StackPanel>
+                                    <TextBlock Text="▱  资源管理器" FontSize="10" FontWeight="Bold" Foreground="{DynamicResource SubTextBrush}" Margin="0,0,0,6"/>
+                                    <Button Content="◴  最近打开" Click="BtnRecentFolders_Click" Style="{StaticResource SidebarRowStyle}" HorizontalContentAlignment="Left"/>
+                                    <Separator Margin="0,4"/>
+                                    <CheckBox x:Name="IncludeSubfoldersCheckBox" Content="包含子文件夹" IsChecked="True" Click="IncludeSubfoldersCheckBox_Click" Padding="7,5"/>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Background="{DynamicResource ToolbarBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="10" Padding="9" Margin="0,0,0,10">
+                                <StackPanel>
+                                    <TextBlock Text="▣  照片库" FontSize="10" FontWeight="Bold" Foreground="{DynamicResource SubTextBrush}" Margin="0,0,0,6"/>
+                                    <Button x:Name="BtnFilterAll" Tag="All" Click="FilterButton_Click" Style="{StaticResource SidebarRowStyle}">
+                                        <DockPanel><TextBlock Text="▣  全部"/><TextBlock x:Name="AllCountText" DockPanel.Dock="Right" Text="0" Foreground="{DynamicResource SubTextBrush}"/></DockPanel>
+                                    </Button>
+                                    <Button x:Name="BtnFilterLive" Tag="Live" Click="FilterButton_Click" Style="{StaticResource SidebarRowStyle}">
+                                        <DockPanel><TextBlock Text="◎  仅实况"/><TextBlock x:Name="LiveCountText" DockPanel.Dock="Right" Text="0" Foreground="{DynamicResource SubTextBrush}"/></DockPanel>
+                                    </Button>
+                                    <Button x:Name="BtnFilterVideo" Tag="Video" Click="FilterButton_Click" Style="{StaticResource SidebarRowStyle}">
+                                        <DockPanel><TextBlock Text="▶  仅视频"/><TextBlock x:Name="VideoCountText" DockPanel.Dock="Right" Text="0" Foreground="{DynamicResource SubTextBrush}"/></DockPanel>
+                                    </Button>
+                                    <Button x:Name="BtnFilterFavorite" Tag="Favorite" Click="FilterButton_Click" Style="{StaticResource SidebarRowStyle}">
+                                        <DockPanel><TextBlock Text="♥  我喜欢"/><TextBlock x:Name="FavoriteCountText" DockPanel.Dock="Right" Text="0" Foreground="{DynamicResource SubTextBrush}"/></DockPanel>
+                                    </Button>
+                                    <Separator x:Name="TagFilterSeparator" Margin="0,5" Visibility="Collapsed"/>
+                                    <StackPanel x:Name="TagFilterPanel"/>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Background="{DynamicResource ToolbarBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="10" Padding="9">
+                                <StackPanel>
+                                    <TextBlock Text="⌘  操作" FontSize="10" FontWeight="Bold" Foreground="{DynamicResource SubTextBrush}" Margin="0,0,0,6"/>
+                                    <Button x:Name="BtnExport" Content="⇧  导出当前筛选" Click="BtnExport_Click" Style="{StaticResource SidebarRowStyle}" HorizontalContentAlignment="Left"/>
+                                    <Button x:Name="BtnSyncAndroid" Content="⇥  同步我喜欢到安卓手机" Click="BtnSyncAndroid_Click" Style="{StaticResource SidebarRowStyle}" HorizontalContentAlignment="Left"/>
+                                    <Button x:Name="BtnTrashFavorites" Content="♲  将我喜欢移入回收站" Click="BtnTrashFavorites_Click" Style="{StaticResource SidebarRowStyle}" HorizontalContentAlignment="Left"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <TextBlock Grid.Row="3" Text="✦  神马都会亿点点的毛毛张" Margin="5,12,0,0" FontSize="10" Foreground="{DynamicResource DimTextBrush}"/>
                 </Grid>
             </Border>
 
-            <!-- 右侧缩略图区域 -->
-            <Grid Grid.Column="1">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                </Grid.RowDefinitions>
+            <Border Grid.Column="2" Background="{DynamicResource CardBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="14">
+                <Grid Margin="10">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="28"/>
+                    </Grid.RowDefinitions>
 
-                <!-- 顶部工具栏 -->
-                <Border Grid.Row="0"
-                        Background="{DynamicResource ToolbarBgBrush}">
-                    <StackPanel Orientation="Horizontal" Margin="12,8">
-                        <!-- 打开文件夹 -->
-                        <Button x:Name="BtnOpenFolder"
-                                Click="BtnOpenFolder_Click"
-                                ToolTip="选择照片文件夹"
-                                Style="{StaticResource ToolbarButtonStyle}">
-                            <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
-                                <TextBlock Text="📂" FontSize="18" HorizontalAlignment="Center"/>
-                                <TextBlock Text="打开" FontSize="10" Opacity="0.7" HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                    <Border Grid.Row="0" Background="{DynamicResource ToolbarBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="11" Padding="16,12" Margin="0,0,0,10">
+                        <Grid>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="照片库" FontSize="28" FontWeight="Bold"/>
+                                <TextBlock x:Name="LibraryPathText" Text="请选择一个照片文件夹" FontSize="11" Foreground="{DynamicResource SubTextBrush}" Margin="0,4,0,0"/>
                             </StackPanel>
-                        </Button>
-
-                        <!-- 收藏筛选 -->
-                        <ToggleButton x:Name="BtnFavFilter"
-                                      Margin="4,0,0,0"
-                                      ToolTip="只显示收藏的照片"
-                                      Checked="BtnFavFilter_Checked"
-                                      Unchecked="BtnFavFilter_Unchecked"
-                                      Style="{StaticResource ToolbarToggleButtonStyle}">
-                            <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
-                                <TextBlock Text="☆" FontSize="18" HorizontalAlignment="Center"/>
-                                <TextBlock Text="收藏" FontSize="10" Opacity="0.7" HorizontalAlignment="Center" Margin="0,2,0,0"/>
-                            </StackPanel>
-                        </ToggleButton>
-
-                        <!-- 标签筛选 -->
-                        <TextBlock Text="🏷" FontSize="14" VerticalAlignment="Center" Margin="8,0,2,0"/>
-                        <TextBlock Text="筛选" FontSize="11" VerticalAlignment="Center" Foreground="{DynamicResource SubTextBrush}" Margin="0,0,4,0"/>
-                        <Border CornerRadius="10"
-                                BorderBrush="{DynamicResource BorderBrush}"
-                                BorderThickness="1"
-                                Background="{DynamicResource CardBgBrush}"
-                                Width="90"
-                                Height="26"
-                                VerticalAlignment="Center">
-                            <ComboBox x:Name="TagFilterCombo"
-                                      Background="Transparent"
-                                      BorderThickness="0"
-                                      Foreground="{DynamicResource TextBrush}"
-                                      VerticalAlignment="Center"
-                                      VerticalContentAlignment="Center"
-                                      Padding="4,0"
-                                      SelectionChanged="TagFilterCombo_SelectionChanged"
-                                      ToolTip="按标签筛选"/>
-                        </Border>
-
-                        <Button x:Name="BtnClearTagFilter"
-                                Content="✕"
-                                Margin="4,0,0,0"
-                                Click="BtnClearTagFilter_Click"
-                                ToolTip="清除标签筛选"
-                                Style="{StaticResource ToolbarButtonStyle}"/>
-
-                        <!-- 状态文本 -->
-                        <TextBlock x:Name="StatusText"
-                                  Margin="16,0,0,0"
-                                  VerticalAlignment="Center"
-                                  Foreground="{DynamicResource SubTextBrush}"
-                                  FontSize="13"/>
-
-                        <Rectangle Width="1" Height="28" Fill="{DynamicResource BorderBrush}" Margin="12,0"/>
-
-                        <!-- 主题切换 -->
-                        <Button x:Name="BtnThemeToggle"
-                                Margin="4,0,0,0"
-                                Click="BtnThemeToggle_Click"
-                                ToolTip="切换主题"
-                                Style="{StaticResource ToolbarButtonStyle}">
-                            <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
-                                <TextBlock x:Name="ThemeIconText" Text="🌙" FontSize="18" HorizontalAlignment="Center"/>
-                                <TextBlock x:Name="ThemeLabelText" Text="深色" FontSize="10" Opacity="0.7" HorizontalAlignment="Center" Margin="0,2,0,0"/>
-                            </StackPanel>
-                        </Button>
-                    </StackPanel>
-                </Border>
-
-                <!-- 缩略图区域 -->
-                <ScrollViewer Grid.Row="1"
-                              Background="{DynamicResource ThumbAreaBgBrush}"
-                              VerticalScrollBarVisibility="Auto">
-                    <WrapPanel x:Name="ThumbnailPanel"
-                               Margin="16">
-                        <!-- 动态填充 ThumbnailCard -->
-                    </WrapPanel>
-                </ScrollViewer>
-            </Grid>
-        </Grid>
-
-        <!-- ========== 模式 B: 全屏查看模式（覆盖层） ========== -->
-        <Grid x:Name="ViewerMode"
-              Background="{DynamicResource WindowBgBrush}"
-              Visibility="Collapsed">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="*"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-            </Grid.RowDefinitions>
-
-            <!-- 顶部工具栏 -->
-            <Border Grid.Row="0"
-                    Background="{DynamicResource ToolbarBgBrush}">
-                <StackPanel Orientation="Horizontal" Margin="12,8">
-                    <Button Click="ViewerPrev_Click"
-                            ToolTip="上一张 (←)"
-                            Style="{StaticResource ToolbarButtonStyle}">
-                        <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
-                            <TextBlock Text="❮" FontSize="18" HorizontalAlignment="Center"/>
-                            <TextBlock Text="上一张" FontSize="10" Opacity="0.7" HorizontalAlignment="Center" Margin="0,2,0,0"/>
-                        </StackPanel>
-                    </Button>
-
-                    <Button Click="ViewerNext_Click"
-                            ToolTip="下一张 (→)"
-                            Style="{StaticResource ToolbarButtonStyle}">
-                        <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
-                            <TextBlock Text="❯" FontSize="18" HorizontalAlignment="Center"/>
-                            <TextBlock Text="下一张" FontSize="10" Opacity="0.7" HorizontalAlignment="Center" Margin="0,2,0,0"/>
-                        </StackPanel>
-                    </Button>
-
-                    <Button x:Name="BtnViewerPlay"
-                            Click="ViewerPlay_Click"
-                            ToolTip="播放实况 (空格)"
-                            Visibility="Collapsed"
-                            Style="{StaticResource ToolbarButtonStyle}">
-                        <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
-                            <TextBlock x:Name="ViewerPlayIconText" Text="▶" FontSize="18" HorizontalAlignment="Center" Foreground="{DynamicResource LiveBadgeBrush}"/>
-                            <TextBlock x:Name="ViewerPlayLabelText" Text="播放" FontSize="10" Opacity="0.7" HorizontalAlignment="Center" Margin="0,2,0,0"/>
-                        </StackPanel>
-                    </Button>
-
-                    <Button x:Name="BtnViewerFav"
-                            Click="ViewerFav_Click"
-                            ToolTip="收藏"
-                            Style="{StaticResource ToolbarButtonStyle}">
-                        <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
-                            <TextBlock x:Name="ViewerFavIconText" Text="☆" FontSize="18" HorizontalAlignment="Center" Foreground="{DynamicResource TextBrush}"/>
-                            <TextBlock Text="收藏" FontSize="10" Opacity="0.7" HorizontalAlignment="Center" Margin="0,2,0,0"/>
-                        </StackPanel>
-                    </Button>
-
-                    <Rectangle Width="1" Height="28" Fill="{DynamicResource BorderBrush}" Margin="8,0"/>
-
-                    <Button Click="ViewerClose_Click"
-                            ToolTip="退出查看 (Esc)"
-                            Style="{StaticResource ToolbarButtonStyle}">
-                        <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
-                            <TextBlock Text="✕" FontSize="18" HorizontalAlignment="Center"/>
-                            <TextBlock Text="关闭" FontSize="10" Opacity="0.7" HorizontalAlignment="Center" Margin="0,2,0,0"/>
-                        </StackPanel>
-                    </Button>
-                </StackPanel>
-            </Border>
-
-            <!-- 中央显示区 -->
-            <Grid x:Name="ViewerImageContainer"
-                  Grid.Row="1"
-                  Background="{DynamicResource ViewerBgBrush}"
-                  MouseWheel="ViewerImageContainer_MouseWheel"
-                  MouseLeftButtonDown="ViewerImageContainer_MouseLeftButtonDown"
-                  MouseMove="ViewerImageContainer_MouseMove"
-                  MouseLeftButtonUp="ViewerImageContainer_MouseLeftButtonUp">
-                <!-- 静态图片 -->
-                <Image x:Name="ViewerImage"
-                       Stretch="Uniform"
-                       RenderOptions.BitmapScalingMode="HighQuality"
-                       RenderTransformOrigin="0.5,0.5">
-                    <Image.RenderTransform>
-                        <TransformGroup>
-                            <ScaleTransform x:Name="ViewerScaleTransform" ScaleX="1" ScaleY="1"/>
-                            <TranslateTransform x:Name="ViewerTranslateTransform" X="0" Y="0"/>
-                        </TransformGroup>
-                    </Image.RenderTransform>
-                </Image>
-
-                <!-- 视频播放 -->
-                <vlc:VideoView x:Name="ViewerVideoView"
-                               Visibility="Collapsed"/>
-
-                <!-- 左侧点击区（上一张） -->
-                <Border x:Name="LeftNavZone"
-                         HorizontalAlignment="Left"
-                         Width="120"
-                         Background="Transparent"
-                         Cursor="Arrow"
-                         MouseLeftButtonDown="ViewerPrev_Click">
-                    <Border.Style>
-                        <Style TargetType="Border">
-                            <Style.Triggers>
-                                <Trigger Property="IsMouseOver" Value="True">
-                                    <Setter Property="Background" Value="{DynamicResource OverlayBgBrush}"/>
-                                </Trigger>
-                            </Style.Triggers>
-                        </Style>
-                    </Border.Style>
-                    <TextBlock Text="❮"
-                              VerticalAlignment="Center"
-                              HorizontalAlignment="Center"
-                              FontSize="40"
-                              Foreground="{DynamicResource TextBrush}"
-                              Opacity="0.2"
-                              IsHitTestVisible="False"/>
-                </Border>
-
-                <!-- 右侧点击区（下一张） -->
-                <Border x:Name="RightNavZone"
-                         HorizontalAlignment="Right"
-                         Width="120"
-                         Background="Transparent"
-                         Cursor="Arrow"
-                         MouseLeftButtonDown="ViewerNext_Click">
-                    <Border.Style>
-                        <Style TargetType="Border">
-                            <Style.Triggers>
-                                <Trigger Property="IsMouseOver" Value="True">
-                                    <Setter Property="Background" Value="{DynamicResource OverlayBgBrush}"/>
-                                </Trigger>
-                            </Style.Triggers>
-                        </Style>
-                    </Border.Style>
-                    <TextBlock Text="❯"
-                              VerticalAlignment="Center"
-                              HorizontalAlignment="Center"
-                              FontSize="40"
-                              Foreground="{DynamicResource TextBrush}"
-                              Opacity="0.2"
-                              IsHitTestVisible="False"/>
-                </Border>
-            </Grid>
-
-            <!-- 标签编辑区 -->
-            <Border Grid.Row="2"
-                    Background="{DynamicResource ToolbarBgBrush}"
-                    BorderBrush="{DynamicResource BorderBrush}"
-                    BorderThickness="0,1,0,0">
-                <StackPanel Orientation="Horizontal" Margin="16,8">
-                    <TextBlock Text="🏷" FontSize="14" VerticalAlignment="Center" Margin="0,0,8,0"/>
-
-                    <WrapPanel x:Name="ViewerTagsPanel"
-                              Orientation="Horizontal"
-                              VerticalAlignment="Center">
-                        <!-- 动态填充已添加的标签 -->
-                    </WrapPanel>
-
-                    <Border CornerRadius="10"
-                            BorderBrush="{DynamicResource BorderBrush}"
-                            BorderThickness="1"
-                            Background="{DynamicResource CardBgBrush}"
-                            Width="120"
-                            Height="26"
-                            Margin="8,0,0,0"
-                            VerticalAlignment="Center">
-                        <TextBox x:Name="TagInputBox"
-                                 Background="Transparent"
-                                 BorderThickness="0"
-                                 Foreground="{DynamicResource TextBrush}"
-                                 CaretBrush="{DynamicResource TextBrush}"
-                                 VerticalContentAlignment="Center"
-                                 Padding="6,0"
-                                 KeyDown="TagInputBox_KeyDown"/>
+                            <Grid Grid.Row="1" Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                    <Button Tag="All" Click="FilterButton_Click" Style="{StaticResource MetricButtonStyle}"><TextBlock x:Name="MetricAllText" Text="▣  全部  0" TextWrapping="NoWrap"/></Button>
+                                    <Button Tag="Live" Click="FilterButton_Click" Style="{StaticResource MetricButtonStyle}"><TextBlock x:Name="MetricLiveText" Text="◎  实况  0" TextWrapping="NoWrap"/></Button>
+                                    <Button Tag="Video" Click="FilterButton_Click" Style="{StaticResource MetricButtonStyle}"><TextBlock x:Name="MetricVideoText" Text="▶  视频  0" TextWrapping="NoWrap"/></Button>
+                                    <Button Tag="Favorite" Click="FilterButton_Click" Style="{StaticResource MetricButtonStyle}"><TextBlock x:Name="MetricFavoriteText" Text="♥  喜欢  0" TextWrapping="NoWrap"/></Button>
+                                    <Button IsHitTestVisible="False" Style="{StaticResource MetricButtonStyle}"><TextBlock x:Name="MetricTagText" Text="◇  标签  0" TextWrapping="NoWrap"/></Button>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <ComboBox x:Name="SortComboBox" Width="92" SelectionChanged="SortComboBox_SelectionChanged" ToolTip="排序" Margin="0,0,8,0">
+                                        <ComboBoxItem Content="新到旧" Tag="Newest" IsSelected="True"/>
+                                        <ComboBoxItem Content="旧到新" Tag="Oldest"/>
+                                        <ComboBoxItem Content="修改时间" Tag="Modified"/>
+                                        <ComboBoxItem Content="文件名" Tag="Name"/>
+                                    </ComboBox>
+                                    <CheckBox x:Name="GroupByTimeCheckBox" Content="按时间分组" IsChecked="True" Click="GroupByTimeCheckBox_Click" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                    <Button Content="⌕−" Width="34" Click="GalleryZoomOut_Click" ToolTip="缩小一级" Style="{StaticResource FlatButtonStyle}"/>
+                                    <Slider x:Name="GalleryZoomSlider" Width="132" Minimum="0" Maximum="1" Value="0.205258" ValueChanged="GalleryZoomSlider_ValueChanged" Margin="6,0" ToolTip="拖动调整照片大小"/>
+                                    <Button Content="⌕+" Width="34" Click="GalleryZoomIn_Click" ToolTip="放大一级" Style="{StaticResource FlatButtonStyle}"/>
+                                    <Button x:Name="BtnReturnPrevious" Content="↶  返回上次查看" Click="BtnReturnPrevious_Click" Visibility="Collapsed" Margin="8,0,0,0" Style="{StaticResource FlatButtonStyle}"/>
+                                    <Button x:Name="BtnReturnCurrent" Content="⌾  回到当前查看" Click="BtnReturnCurrent_Click" Visibility="Collapsed" Margin="8,0,0,0" Style="{StaticResource FlatButtonStyle}"/>
+                                    <Button Content="↑  回到顶部" Click="BtnScrollTop_Click" Margin="8,0,0,0" Style="{StaticResource FlatButtonStyle}"/>
+                                </StackPanel>
+                            </Grid>
+                        </Grid>
                     </Border>
 
-                    <Button Content="添加"
-                            Click="BtnAddTag_Click"
-                            Margin="4,0,0,0"
-                            Padding="8,3"
-                            Style="{StaticResource ToolbarButtonStyle}"/>
-                </StackPanel>
-            </Border>
+                    <Border Grid.Row="1" Background="{DynamicResource ThumbAreaBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="11" ClipToBounds="True">
+                        <ScrollViewer x:Name="GalleryScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" PreviewMouseWheel="GalleryScrollViewer_PreviewMouseWheel" ScrollChanged="GalleryScrollViewer_ScrollChanged" IsManipulationEnabled="True" ManipulationStarting="GalleryScrollViewer_ManipulationStarting" ManipulationDelta="GalleryScrollViewer_ManipulationDelta">
+                            <StackPanel x:Name="ThumbnailPanel" Margin="16"/>
+                        </ScrollViewer>
+                    </Border>
 
-            <!-- 底部信息栏 -->
-            <Border Grid.Row="3"
-                    Background="{DynamicResource ToolbarBgBrush}">
-                <TextBlock x:Name="ViewerInfoText"
-                          TextAlignment="Center"
-                          Foreground="{DynamicResource SubTextBrush}"
-                          FontSize="12"
-                          Padding="10"/>
+                    <DockPanel Grid.Row="2" Margin="8,6,8,0">
+                        <TextBlock x:Name="StatusText" Foreground="{DynamicResource SubTextBrush}" FontSize="10"/>
+                        <ProgressBar x:Name="WorkProgressBar" Width="150" Height="4" Margin="10,0" VerticalAlignment="Center" Visibility="Collapsed"/>
+                        <TextBlock x:Name="VisibleCountText" DockPanel.Dock="Right" Foreground="{DynamicResource SubTextBrush}" FontSize="10"/>
+                    </DockPanel>
+                </Grid>
             </Border>
         </Grid>
+
+        <!-- 查看器覆盖层 -->
+        <Border x:Name="ViewerMode" Grid.Row="1" Margin="8" Background="{DynamicResource CardBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="14" Visibility="Collapsed">
+            <Grid>
+                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <Border Grid.Row="0" Background="{DynamicResource ToolbarBgBrush}" CornerRadius="14,14,0,0" Padding="12,9">
+                    <DockPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <Button x:Name="BtnViewerPrevious" Content="‹  上一张" Click="ViewerPrev_Click" ToolTip="上一张 (←/A)" Style="{StaticResource FlatButtonStyle}"/>
+                            <Button x:Name="BtnViewerNext" Content="下一张  ›" Click="ViewerNext_Click" ToolTip="下一张 (→/D)" Margin="6,0" Style="{StaticResource FlatButtonStyle}"/>
+                            <Button x:Name="BtnViewerPlay" Content="▶  播放实况" Click="ViewerPlay_Click" ToolTip="播放实况 (空格)" Visibility="Collapsed" Style="{StaticResource FlatButtonStyle}"/>
+                            <Button x:Name="BtnViewerZoomOut" Content="⌕−" Click="ViewerZoomOut_Click" Margin="12,0,0,0" Style="{StaticResource FlatButtonStyle}"/>
+                            <Button x:Name="BtnViewerZoomPercent" Content="100%" Click="ViewerResetZoom_Click" Margin="6,0" Style="{StaticResource FlatButtonStyle}"/>
+                            <Button x:Name="BtnViewerZoomIn" Content="⌕+" Click="ViewerZoomIn_Click" Style="{StaticResource FlatButtonStyle}"/>
+                            <Button x:Name="BtnViewerFavorite" Content="♡  我喜欢" Click="ViewerFav_Click" Margin="12,0,0,0" Style="{StaticResource FlatButtonStyle}"/>
+                            <Button x:Name="BtnViewerEditCover" Content="◴  停留画面" Click="ViewerEditCover_Click" Margin="6,0,0,0" Visibility="Collapsed" Style="{StaticResource FlatButtonStyle}"/>
+                            <Button x:Name="BtnViewerTrash" Content="♲  回收站" Click="ViewerTrash_Click" Margin="6,0,0,0" Style="{StaticResource FlatButtonStyle}"/>
+                        </StackPanel>
+                        <Button DockPanel.Dock="Right" Content="返回图库" Click="ViewerClose_Click" Style="{StaticResource FlatButtonStyle}"/>
+                    </DockPanel>
+                </Border>
+
+                <Grid x:Name="ViewerImageContainer" Grid.Row="1" Background="{DynamicResource ViewerBgBrush}" MouseWheel="ViewerImageContainer_MouseWheel" MouseLeftButtonDown="ViewerImageContainer_MouseLeftButtonDown" MouseMove="ViewerImageContainer_MouseMove" MouseLeftButtonUp="ViewerImageContainer_MouseLeftButtonUp" IsManipulationEnabled="True" ManipulationStarting="ViewerImageContainer_ManipulationStarting" ManipulationDelta="ViewerImageContainer_ManipulationDelta">
+                    <Image x:Name="ViewerImage" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality" RenderTransformOrigin="0.5,0.5">
+                        <Image.RenderTransform>
+                            <TransformGroup>
+                                <ScaleTransform x:Name="ViewerScaleTransform" ScaleX="1" ScaleY="1"/>
+                                <TranslateTransform x:Name="ViewerTranslateTransform"/>
+                            </TransformGroup>
+                        </Image.RenderTransform>
+                    </Image>
+                    <vlc:VideoView x:Name="ViewerVideoView" Visibility="Collapsed"/>
+                    <Button x:Name="LeftNavZone" Content="‹" FontSize="34" HorizontalAlignment="Left" VerticalAlignment="Stretch" Width="82" Opacity="0.35" Click="ViewerPrev_Click" Background="Transparent" BorderThickness="0"/>
+                    <Button x:Name="RightNavZone" Content="›" FontSize="34" HorizontalAlignment="Right" VerticalAlignment="Stretch" Width="82" Opacity="0.35" Click="ViewerNext_Click" Background="Transparent" BorderThickness="0"/>
+                </Grid>
+
+                <Border x:Name="CoverFrameEditor" Grid.Row="2" Background="{DynamicResource ToolbarBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0" Padding="14,8" Visibility="Collapsed">
+                    <DockPanel>
+                        <TextBlock Text="播放结束停留画面" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                            <Button Content="恢复封面" Click="CoverFrameRestore_Click" Style="{StaticResource FlatButtonStyle}"/>
+                            <Button Content="取消" Click="CoverFrameCancel_Click" Margin="6,0" Style="{StaticResource FlatButtonStyle}"/>
+                            <Button Content="设为停留画面" Click="CoverFrameApply_Click" Background="#1677FF" Foreground="White" BorderThickness="0" Style="{StaticResource FlatButtonStyle}"/>
+                        </StackPanel>
+                        <TextBlock x:Name="CoverFrameTimeText" Text="00:00.000" Width="78" VerticalAlignment="Center"/>
+                        <Slider x:Name="CoverFrameSlider" Minimum="0" Maximum="1" ValueChanged="CoverFrameSlider_ValueChanged" VerticalAlignment="Center" Margin="8,0,16,0"/>
+                    </DockPanel>
+                </Border>
+
+                <Border Grid.Row="3" Background="{DynamicResource ToolbarBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0" Padding="14,8">
+                    <DockPanel>
+                        <WrapPanel x:Name="ViewerTagsPanel"/>
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                            <TextBox x:Name="TagInputBox" Width="140" Padding="7,4" KeyDown="TagInputBox_KeyDown"/>
+                            <Button Content="添加标签" Click="BtnAddTag_Click" Margin="6,0,0,0" Style="{StaticResource FlatButtonStyle}"/>
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+                <Border Grid.Row="4" Background="{DynamicResource ToolbarBgBrush}" CornerRadius="0,0,14,14" Padding="14,8">
+                    <TextBlock x:Name="ViewerInfoText" Foreground="{DynamicResource SubTextBrush}" TextAlignment="Center"/>
+                </Border>
+            </Grid>
+        </Border>
     </Grid>
 </Window>

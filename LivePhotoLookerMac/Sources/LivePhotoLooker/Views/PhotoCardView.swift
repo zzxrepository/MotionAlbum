@@ -4,10 +4,12 @@ import SwiftUI
 struct PhotoCardView: View {
     @ObservedObject var item: PhotoItem
     let onOpen: () -> Void
+    let onFocus: () -> Void
     let onToggleSelection: () -> Void
     let onReveal: () -> Void
     let onTrash: () -> Void
     let thumbnailSize: CGFloat
+    let isShowcaseMode: Bool
     let isFocused: Bool
     let isInteractionDisabled: Bool
 
@@ -16,31 +18,39 @@ struct PhotoCardView: View {
     @State private var didFailThumbnail = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: showsDetails ? 9 : 0) {
+        VStack(alignment: .leading, spacing: isShowcaseMode ? 12 : (showsDetails ? 9 : 0)) {
             thumbnailLayer
 
             if showsDetails {
-                detailLayer
+                if isShowcaseMode {
+                    showcaseDetailLayer
+                } else {
+                    detailLayer
+                }
             }
         }
         .frame(width: thumbnailSize)
-        .padding(showsDetails ? 9 : 0)
+        .padding(isShowcaseMode ? 12 : (showsDetails ? 9 : 0))
         .background { cardBackground }
         .overlay {
             cardBorder
         }
         .shadow(
-            color: .black.opacity(showsDetails ? (isHovering ? 0.11 : 0.055) : 0.035),
-            radius: showsDetails ? (isHovering ? 14 : 8) : 3,
+            color: .black.opacity(showsDetails ? (isHovering ? 0.09 : 0.035) : 0.025),
+            radius: showsDetails ? (isHovering ? 8 : 3) : 2,
             x: 0,
-            y: showsDetails ? (isHovering ? 7 : 3) : 1
+            y: showsDetails ? (isHovering ? 4 : 1) : 1
         )
-        .scaleEffect(isHovering && showsDetails ? 1.012 : 1)
+        .scaleEffect(isHovering && showsDetails ? (isShowcaseMode ? 1.002 : 1.012) : 1)
         .contentShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
-        .onTapGesture(count: 2) {
+        .onTapGesture {
+            guard !isInteractionDisabled else { return }
+            onFocus()
+        }
+        .simultaneousGesture(TapGesture(count: 2).onEnded {
             guard !isInteractionDisabled else { return }
             onOpen()
-        }
+        })
         .onHover { isHovering = $0 }
         .animation(.easeOut(duration: 0.16), value: isHovering)
         .animation(.easeInOut(duration: 0.16), value: item.isSelected)
@@ -48,7 +58,7 @@ struct PhotoCardView: View {
         .contextMenu {
             Button("查看") { onOpen() }
                 .disabled(isInteractionDisabled)
-            Button(item.isSelected ? "取消精选" : "加入精选") { onToggleSelection() }
+            Button(item.isSelected ? "取消喜欢" : "加入我喜欢") { onToggleSelection() }
                 .disabled(isInteractionDisabled)
             if item.tags.isEmpty == false {
                 Divider()
@@ -79,12 +89,12 @@ struct PhotoCardView: View {
         ZStack(alignment: .topTrailing) {
             ZStack {
                 RoundedRectangle(cornerRadius: imageCornerRadius, style: .continuous)
-                    .fill(Color(nsColor: .textBackgroundColor))
+                    .fill(isShowcaseMode ? Color.black.opacity(0.92) : Color(nsColor: .textBackgroundColor))
 
                 if let thumbnail {
                     Image(nsImage: thumbnail)
                         .resizable()
-                        .scaledToFill()
+                        .aspectRatio(contentMode: isShowcaseMode ? .fit : .fill)
                         .frame(width: thumbnailSize, height: imageHeight)
                 } else if didFailThumbnail {
                     placeholder
@@ -104,19 +114,16 @@ struct PhotoCardView: View {
             }
 
             Button(action: onToggleSelection) {
-                Image(systemName: item.isSelected ? "checkmark.circle.fill" : "circle")
+                Image(systemName: item.isSelected ? "heart.fill" : "heart")
                     .font(.system(size: selectionIconSize, weight: .semibold))
-                    .symbolRenderingMode(.palette)
-                    .foregroundStyle(
-                        item.isSelected ? Color.white : Color.white.opacity(0.9),
-                        item.isSelected ? Color.accentColor : Color.black.opacity(0.35)
-                    )
-                    .shadow(radius: 2)
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundStyle(item.isSelected ? Color.red : Color.white.opacity(0.96))
+                    .shadow(color: Color.black.opacity(0.58), radius: 2, x: 0, y: 1)
             }
             .buttonStyle(.plain)
             .disabled(isInteractionDisabled)
             .padding(showsDetails ? 8 : 5)
-            .help(item.isSelected ? "取消精选" : "加入精选")
+            .help(item.isSelected ? "取消喜欢" : "加入我喜欢")
 
             mediaBadge
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
@@ -170,6 +177,42 @@ struct PhotoCardView: View {
         }
     }
 
+    private var showcaseDetailLayer: some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(item.fileName)
+                    .font(.system(size: 15, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                HStack(spacing: 12) {
+                    Label(
+                        ByteCountFormatter.string(fromByteCount: item.fileSize, countStyle: .file),
+                        systemImage: "doc"
+                    )
+                    if let sizeText = item.metadata.sizeText {
+                        Label(sizeText, systemImage: "rectangle")
+                    }
+                    if let deviceText = item.metadata.deviceText {
+                        Label(deviceText, systemImage: "camera")
+                            .lineLimit(1)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 12)
+
+            Label("双击查看", systemImage: "arrow.up.left.and.arrow.down.right")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+                .fixedSize()
+        }
+        .padding(.horizontal, 4)
+        .padding(.bottom, 2)
+    }
+
     @ViewBuilder
     private var cardBackground: some View {
         if showsDetails {
@@ -189,8 +232,8 @@ struct PhotoCardView: View {
         ZStack {
             RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
                 .stroke(
-                    item.isSelected ? Color.accentColor : Color.primary.opacity(isHovering ? 0.12 : 0.07),
-                    lineWidth: item.isSelected ? (showsDetails ? 2.5 : 2) : 1
+                    Color.primary.opacity(isHovering ? 0.12 : 0.07),
+                    lineWidth: 1
                 )
 
             if isFocused {
@@ -246,7 +289,7 @@ struct PhotoCardView: View {
         HStack(spacing: showsDetails ? 4 : 0) {
             Image(systemName: "eye.fill")
             if showsDetails {
-                Text("刚刚查看")
+                Text("当前查看")
             }
         }
         .font(.system(size: showsDetails ? 10 : 11, weight: .bold, design: .rounded))
@@ -286,15 +329,22 @@ struct PhotoCardView: View {
     }
 
     private var imageHeight: CGFloat {
-        showsDetails ? min(178, max(122, thumbnailSize * 0.72)) : thumbnailSize
+        if isShowcaseMode {
+            let preferredHeight = thumbnailSize / showcaseAspectRatio
+            return min(640, max(360, preferredHeight))
+        }
+        if showsDetails {
+            return min(360, max(122, thumbnailSize * 0.68))
+        }
+        return thumbnailSize
     }
 
     private var cardCornerRadius: CGFloat {
-        showsDetails ? 16 : 6
+        isShowcaseMode ? 16 : (showsDetails ? 10 : 6)
     }
 
     private var imageCornerRadius: CGFloat {
-        showsDetails ? 12 : 5
+        isShowcaseMode ? 12 : (showsDetails ? 7 : 5)
     }
 
     private var selectionIconSize: CGFloat {
@@ -306,7 +356,15 @@ struct PhotoCardView: View {
     }
 
     private var thumbnailPixelSize: Int {
-        max(220, min(760, Int((thumbnailSize * 3).rounded(.up))))
+        let upperLimit = isShowcaseMode ? 2_200 : 1_100
+        return max(220, min(upperLimit, Int((thumbnailSize * 2.4).rounded(.up))))
+    }
+
+    private var showcaseAspectRatio: CGFloat {
+        let width = item.metadata.pixelWidth.map(CGFloat.init) ?? thumbnail?.size.width
+        let height = item.metadata.pixelHeight.map(CGFloat.init) ?? thumbnail?.size.height
+        guard let width, let height, height > 0 else { return 16 / 10 }
+        return min(2.4, max(0.75, width / height))
     }
 
     private var accessibilityLabel: String {

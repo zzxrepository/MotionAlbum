@@ -37,7 +37,6 @@ private enum AppQuotes {
 
     private static let bundled: [AppQuote] = [
         AppQuote(text: "当时只道是寻常", source: "纳兰性德"),
-        AppQuote(text: "浮云一别后，流水十年间", source: "韦应物"),
         AppQuote(text: "诗酒趁年华", source: "苏轼"),
         AppQuote(text: "平凡的一天，也值得收藏", source: "灵动相册"),
         AppQuote(text: "把时间折好，放进相册", source: "灵动相册"),
@@ -108,6 +107,7 @@ private enum AppIconImageProvider {
 
 struct ContentView: View {
     @StateObject private var library = PhotoLibrary()
+    @AppStorage("workspace.sidebar.isVisible") private var isSidebarVisible = true
     @State private var viewerItem: PhotoItem?
     @State private var alert: UserFacingAlert?
     @State private var showPhoneSyncConfirmation = false
@@ -118,18 +118,41 @@ struct ContentView: View {
     @State private var galleryScrollToTopToken = 0
     @State private var focusedGalleryItemID: String?
     @State private var focusedGalleryItemName: String?
+    @State private var previousGalleryItemID: String?
+    @State private var previousGalleryItemName: String?
     @State private var groupPhotosByTime = true
 
-    private let galleryThumbnailSizeRange: ClosedRange<CGFloat> = 72...230
+    private let galleryThumbnailSizeRange: ClosedRange<CGFloat> = 72...1_100
+    private let galleryZoomStops: [CGFloat] = [72, 96, 126, 160, 220, 300, 420, 520, 720, 900, 1_100]
+    private let workspaceCornerRadius: CGFloat = 14
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-                .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 280)
-        } detail: {
-            detail
+        ZStack {
+            Color(nsColor: .underPageBackgroundColor)
+                .ignoresSafeArea()
+
+            HStack(spacing: 8) {
+                if isSidebarVisible {
+                    workspacePanel {
+                        sidebar
+                    }
+                    .frame(width: 238)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+                    .accessibilityIdentifier("workspace.sidebar")
+                }
+
+                workspacePanel {
+                    detail
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityIdentifier("workspace.library")
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 7)
+            .padding(.bottom, 8)
         }
         .frame(minWidth: 1080, minHeight: 700)
+        .animation(.easeInOut(duration: 0.20), value: isSidebarVisible)
         .toolbar { toolbar }
         .alert(item: $alert) { alert in
             Alert(
@@ -139,7 +162,7 @@ struct ContentView: View {
             )
         }
         .confirmationDialog(
-            "同步 \(library.selectedCount) 张精选照片到安卓手机？",
+            "同步 \(library.selectedCount) 张“我喜欢”照片到安卓手机？",
             isPresented: $showPhoneSyncConfirmation,
             titleVisibility: .visible
         ) {
@@ -175,195 +198,208 @@ struct ContentView: View {
         }
     }
 
+    private func workspacePanel<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .frame(maxHeight: .infinity)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .clipShape(
+                RoundedRectangle(cornerRadius: workspaceCornerRadius, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: workspaceCornerRadius, style: .continuous)
+                    .stroke(Color.primary.opacity(0.10), lineWidth: 1)
+            }
+    }
+
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 10) {
             brandHeader
             folderSummaryCard
 
-            Button {
-                resetViewerContext()
-                library.chooseAndOpenFolder()
-            } label: {
-                Label("打开文件夹", systemImage: "folder.badge.plus")
-                    .frame(maxWidth: .infinity)
-            }
-            .controlSize(.large)
-            .buttonStyle(.borderedProminent)
-            .disabled(isWorking)
-
-            Menu {
-                recentFolderMenuItems
-            } label: {
-                Label("打开历史目录", systemImage: "clock.arrow.circlepath")
-                    .frame(maxWidth: .infinity)
-            }
-            .controlSize(.large)
-            .disabled(isWorking)
-
-            Toggle("包含子文件夹", isOn: Binding(
-                get: { library.includeSubfolders },
-                set: { value in
-                    guard !isWorking else { return }
-                    library.includeSubfolders = value
-                    if library.currentFolder != nil {
-                        resetViewerContext()
-                        library.reload()
-                    }
-                }
-            ))
-            .disabled(library.isLoading || isWorking)
-
-            Divider()
-
-            sidebarSectionTitle("筛选")
-            ForEach(PhotoFilter.allCases) { filter in
-                Button {
-                    library.filter = filter
-                } label: {
-                    HStack {
-                        Label(filter.rawValue, systemImage: filterIcon(filter))
-                        Spacer()
-                        Text(filterCount(filter).formatted())
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(
-                        library.filter == filter ? Color.accentColor.opacity(0.18) : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 7)
-                    )
-                }
-                .buttonStyle(.plain)
-            }
-
-            if library.allTags.isEmpty == false {
-                Divider()
-
-                HStack {
-                    sidebarSectionTitle("标签")
-                    Spacer()
-                    if library.selectedTag != nil {
-                        Button("清除") {
-                            library.selectTag(nil)
-                        }
-                        .font(.caption)
-                        .buttonStyle(.plain)
-                    }
-                }
-
-                VStack(spacing: 4) {
-                    ForEach(library.allTags, id: \.self) { tag in
-                        Button {
-                            library.selectTag(library.selectedTag == tag ? nil : tag)
+            ScrollView {
+                VStack(spacing: 10) {
+                    sidebarBlock("资源管理器", systemImage: "folder") {
+                        Menu {
+                            recentFolderMenuItems
                         } label: {
-                            HStack(spacing: 6) {
-                                Label(tag, systemImage: "tag")
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                                Spacer()
-                                Text(library.count(forTag: tag).formatted())
-                                    .foregroundStyle(.secondary)
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(
-                                library.selectedTag == tag ? Color.accentColor.opacity(0.18) : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 7)
-                            )
+                            sidebarMenuLabel("最近打开", systemImage: "clock.arrow.circlepath")
                         }
-                        .buttonStyle(.plain)
+                        .menuStyle(.borderlessButton)
+                        .frame(maxWidth: .infinity)
+                        .disabled(isWorking)
+
+                        Divider()
+
+                        Toggle("包含子文件夹", isOn: Binding(
+                            get: { library.includeSubfolders },
+                            set: { value in
+                                guard !isWorking else { return }
+                                library.includeSubfolders = value
+                                if library.currentFolder != nil {
+                                    resetViewerContext()
+                                    library.reload()
+                                }
+                            }
+                        ))
+                        .toggleStyle(.checkbox)
+                        .disabled(library.isLoading || isWorking)
+                    }
+
+                    sidebarBlock("照片库", systemImage: "photo.stack") {
+                        VStack(spacing: 3) {
+                            ForEach(PhotoFilter.allCases) { filter in
+                                Button {
+                                    library.filter = filter
+                                } label: {
+                                    HStack {
+                                        Label(filter.rawValue, systemImage: filterIcon(filter))
+                                        Spacer()
+                                        Text(filterCount(filter).formatted())
+                                            .font(.caption.monospacedDigit())
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .frame(maxWidth: .infinity, minHeight: 30)
+                                    .contentShape(Rectangle())
+                                    .background(
+                                        library.filter == filter
+                                            ? Color.accentColor.opacity(0.16)
+                                            : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .frame(maxWidth: .infinity)
+                            }
+                        }
+                    }
+
+                    if library.allTags.isEmpty == false {
+                        sidebarBlock("标签", systemImage: "tag") {
+                            VStack(spacing: 3) {
+                                ForEach(library.allTags, id: \.self) { tag in
+                                    Button {
+                                        library.selectTag(library.selectedTag == tag ? nil : tag)
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Text(tag)
+                                                .lineLimit(1)
+                                                .truncationMode(.tail)
+                                            Spacer()
+                                            Text(library.count(forTag: tag).formatted())
+                                                .font(.caption.monospacedDigit())
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        .padding(.horizontal, 8)
+                                        .frame(maxWidth: .infinity, minHeight: 28)
+                                        .contentShape(Rectangle())
+                                        .background(
+                                            library.selectedTag == tag
+                                                ? Color.accentColor.opacity(0.16)
+                                                : Color.clear,
+                                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .frame(maxWidth: .infinity)
+                                }
+                                if library.selectedTag != nil {
+                                    Button("清除标签筛选") { library.selectTag(nil) }
+                                        .font(.caption)
+                                        .buttonStyle(.plain)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, 8)
+                                        .contentShape(Rectangle())
+                                }
+                            }
+                        }
+                    }
+
+                    sidebarBlock("操作", systemImage: "command") {
+                        VStack(spacing: 2) {
+                            sidebarActionButton("导出当前筛选", systemImage: "square.and.arrow.up") {
+                                exportFilteredOriginals()
+                            }
+                            .disabled(library.filteredPhotos.isEmpty || isWorking)
+
+                            sidebarActionButton("同步我喜欢到安卓手机", systemImage: "iphone.and.arrow.forward") {
+                                showPhoneSyncConfirmation = true
+                            }
+                            .disabled(library.selectedCount == 0 || isWorking)
+
+                            Button(role: .destructive) {
+                                requestTrashSelectedItems()
+                            } label: {
+                                sidebarMenuLabel("将我喜欢移入废纸篓", systemImage: "trash")
+                            }
+                            .buttonStyle(.plain)
+                            .frame(maxWidth: .infinity)
+                            .disabled(library.selectedCount == 0 || isWorking)
+                        }
+                    }
+
+                    if library.isDetecting || library.isIndexingMetadata {
+                        sidebarBlock("后台任务", systemImage: "waveform.path.ecg") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                if library.isDetecting {
+                                    ProgressView(
+                                        value: Double(library.detectedCount),
+                                        total: Double(max(1, library.photos.count))
+                                    )
+                                    Text("识别实况 \(library.detectedCount)/\(library.photos.count)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                if library.isIndexingMetadata {
+                                    ProgressView(
+                                        value: Double(library.indexedMetadataCount),
+                                        total: Double(max(1, library.metadataIndexTotal))
+                                    )
+                                    Text("读取元信息 \(library.indexedMetadataCount)/\(library.metadataIndexTotal)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
                     }
                 }
             }
 
-            Divider()
-
-            Button {
-                exportFilteredOriginals()
-            } label: {
-                Label("导出当前筛选", systemImage: "square.and.arrow.up")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .disabled(library.filteredPhotos.isEmpty || isWorking)
-
-            Button(role: .destructive) {
-                requestTrashSelectedItems()
-            } label: {
-                Label("移入废纸篓精选", systemImage: "trash")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .disabled(library.selectedCount == 0 || isWorking)
-
-            Button {
-                showPhoneSyncConfirmation = true
-            } label: {
-                Label("同步精选到安卓手机", systemImage: "iphone.and.arrow.forward")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .disabled(library.selectedCount == 0 || isWorking)
-
-            Spacer()
-
-            if library.isDetecting {
-                ProgressView(
-                    value: Double(library.detectedCount),
-                    total: Double(max(1, library.photos.count))
-                )
-                Text("后台识别实况 \(library.detectedCount)/\(library.photos.count)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            if library.isIndexingMetadata {
-                ProgressView(
-                    value: Double(library.indexedMetadataCount),
-                    total: Double(max(1, library.metadataIndexTotal))
-                )
-                Text("后台读取元信息 \(library.indexedMetadataCount)/\(library.metadataIndexTotal)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
+            Spacer(minLength: 0)
             authorSignature
         }
-        .padding(.horizontal, 14)
-        .padding(.top, 14)
-        .padding(.bottom, 12)
+        .padding(10)
         .background(
-            LinearGradient(
-                colors: [
-                    Color(nsColor: .windowBackgroundColor),
-                    Color.accentColor.opacity(0.035)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            Color(nsColor: .windowBackgroundColor)
         )
     }
 
     private var brandHeader: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Image(nsImage: AppIconImageProvider.image)
                 .resizable()
                 .interpolation(.high)
                 .aspectRatio(contentMode: .fill)
-                .frame(width: 54, height: 54)
-                .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                .frame(width: 42, height: 42)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 15, style: .continuous)
-                        .stroke(.white.opacity(0.5), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color.primary.opacity(0.10), lineWidth: 1)
                 }
-                .shadow(color: Color.black.opacity(0.12), radius: 14, x: 0, y: 8)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(AppIdentity.displayName)
-                    .font(.system(size: 19, weight: .bold))
+                    .font(.system(size: 17, weight: .semibold))
                 Text(AppIdentity.englishName)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 3)
     }
 
     private var authorSignature: some View {
@@ -384,22 +420,94 @@ struct ContentView: View {
     }
 
     private var folderSummaryCard: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Label("照片目录", systemImage: "folder")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Label("当前目录", systemImage: "folder")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if library.currentFolder != nil {
+                    Button {
+                        resetViewerContext()
+                        library.reload()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(library.isLoading || isWorking)
+                    .help("重新扫描当前目录")
+                }
+            }
             Text(library.currentFolder?.path ?? "尚未选择")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(3)
+                .lineLimit(2)
                 .truncationMode(.middle)
+
+            Button {
+                resetViewerContext()
+                library.chooseAndOpenFolder()
+            } label: {
+                Label(library.currentFolder == nil ? "打开照片文件夹" : "切换文件夹", systemImage: "folder.badge.plus")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isWorking)
         }
-        .padding(12)
+        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.primary.opacity(0.09), lineWidth: 1)
         }
+    }
+
+    private func sidebarBlock<Content: View>(
+        _ title: String,
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title.uppercased(), systemImage: systemImage)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.secondary)
+            content()
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            Color(nsColor: .controlBackgroundColor).opacity(0.82),
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        }
+    }
+
+    private func sidebarMenuLabel(_ title: String, systemImage: String) -> some View {
+        HStack(spacing: 8) {
+            Label(title, systemImage: systemImage)
+            Spacer(minLength: 0)
+        }
+            .font(.system(size: 12))
+            .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+            .background(Color.clear)
+            .contentShape(Rectangle())
+    }
+
+    private func sidebarActionButton(
+        _ title: String,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            sidebarMenuLabel(title, systemImage: systemImage)
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
     }
 
     private func sidebarSectionTitle(_ title: String) -> some View {
@@ -450,37 +558,51 @@ struct ContentView: View {
     }
 
     private var libraryContent: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 10) {
             libraryHeader
-            if library.filteredPhotos.isEmpty {
-                emptyState(
-                    title: "没有符合条件的照片",
-                    systemImage: "photo.on.rectangle.angled",
-                    description: library.isDetecting && library.filter == .live
-                        ? "实况照片仍在后台识别，请稍候。"
-                        : "请调整筛选或搜索条件。"
-                ) { EmptyView() }
-            } else {
-                PhotoGridView(
-                    photos: library.filteredPhotos,
-                    thumbnailSize: galleryThumbnailSize,
-                    thumbnailSizeRange: galleryThumbnailSizeRange,
-                    scrollTargetID: galleryScrollTargetID,
-                    scrollToTopToken: galleryScrollToTopToken,
-                    focusedItemID: focusedGalleryItemID,
-                    groupByTime: groupPhotosByTime,
-                    onThumbnailSizeChange: setGalleryThumbnailSize,
-                    onScrollTargetConsumed: { galleryScrollTargetID = nil },
-                    onOpen: openViewer,
-                    onToggleSelection: library.toggleSelection,
-                    onReveal: library.revealInFinder,
-                    onTrash: { requestTrashItems([$0], fallbackViewerItem: nil) },
-                    isInteractionDisabled: isWorking
-                )
+            Group {
+                if library.filteredPhotos.isEmpty {
+                    emptyState(
+                        title: "没有符合条件的照片",
+                        systemImage: "photo.on.rectangle.angled",
+                        description: library.isDetecting && library.filter == .live
+                            ? "实况照片仍在后台识别，请稍候。"
+                            : "请调整筛选或搜索条件。"
+                    ) { EmptyView() }
+                } else {
+                    PhotoGridView(
+                        photos: library.filteredPhotos,
+                        thumbnailSize: galleryThumbnailSize,
+                        thumbnailSizeRange: galleryThumbnailSizeRange,
+                        scrollTargetID: galleryScrollTargetID,
+                        scrollToTopToken: galleryScrollToTopToken,
+                        focusedItemID: focusedGalleryItemID,
+                        groupByTime: groupPhotosByTime,
+                        onThumbnailSizeChange: setGalleryThumbnailSize,
+                        onScrollTargetConsumed: { galleryScrollTargetID = nil },
+                        onOpen: openViewer,
+                        onToggleSelection: library.toggleSelection,
+                        onReveal: library.revealInFinder,
+                        onTrash: { requestTrashItems([$0], fallbackViewerItem: nil) },
+                        onFocus: { setFocusedGalleryItem($0) },
+                        isInteractionDisabled: isWorking,
+                        isKeyboardNavigationEnabled: viewerItem == nil && isWorking == false
+                    )
+                }
             }
-            Divider()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(
+                Color(nsColor: .controlBackgroundColor).opacity(0.72),
+                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+            }
             statusFooter
         }
+        .padding(10)
     }
 
     private var libraryHeader: some View {
@@ -531,46 +653,83 @@ struct ContentView: View {
                 }
             }
 
+            libraryHeaderControls
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
+        .background(
+            Color(nsColor: .controlBackgroundColor).opacity(0.90),
+            in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        }
+    }
+
+    private var libraryHeaderControls: some View {
+        ViewThatFits(in: .horizontal) {
             HStack(spacing: 8) {
-                metricBadge("全部", value: library.photos.count, systemImage: "photo.stack")
-                metricBadge("实况", value: library.liveCount, systemImage: "livephoto")
-                if library.videoCount > 0 {
-                    metricBadge("视频", value: library.videoCount, systemImage: "play.rectangle")
-                }
-                metricBadge("精选", value: library.selectedCount, systemImage: "checkmark.circle")
-                metricBadge("标签", value: library.taggedCount, systemImage: "tag")
-                if let selectedTag = library.selectedTag {
-                    TagBadgeView(tag: selectedTag, count: library.count(forTag: selectedTag), isActive: true)
-                }
-                Spacer()
-                sortMenu
-                thumbnailSizeControl
-                if focusedGalleryItemID != nil {
-                    Button {
-                        returnToFocusedGalleryItem()
-                    } label: {
-                        Label("回到查看位置", systemImage: "scope")
-                    }
-                    .buttonStyle(.bordered)
-                    .help(focusedGalleryItemName.map { "回到刚刚查看的照片：\($0)" } ?? "回到刚刚查看的照片")
-                }
-                Button {
-                    galleryScrollToTopToken &+= 1
-                } label: {
-                    Label("回到顶部", systemImage: "arrow.up.to.line")
-                }
-                .buttonStyle(.bordered)
-                .help("回到照片库顶部")
+                libraryMetricBadges
+                Spacer(minLength: 12)
+                libraryBrowseControls
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                libraryMetricBadges
+                libraryBrowseControls
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 15)
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.primary.opacity(0.06))
-                .frame(height: 1)
+    }
+
+    private var libraryMetricBadges: some View {
+        HStack(spacing: 8) {
+            metricBadge("全部", value: library.photos.count, systemImage: "photo.stack")
+            metricBadge("实况", value: library.liveCount, systemImage: "livephoto")
+            if library.videoCount > 0 {
+                metricBadge("视频", value: library.videoCount, systemImage: "play.rectangle")
+            }
+            metricBadge("喜欢", value: library.selectedCount, systemImage: "heart.fill")
+            metricBadge("标签", value: library.taggedCount, systemImage: "tag")
+            if let selectedTag = library.selectedTag {
+                TagBadgeView(tag: selectedTag, count: library.count(forTag: selectedTag), isActive: true)
+            }
         }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var libraryBrowseControls: some View {
+        HStack(spacing: 8) {
+            sortMenu
+            thumbnailSizeControl
+            if previousGalleryItemID != nil {
+                Button {
+                    returnToPreviousGalleryItem()
+                } label: {
+                    Label("返回上次查看", systemImage: "arrow.uturn.backward")
+                }
+                .buttonStyle(.bordered)
+                .help(previousGalleryItemName.map { "返回上次查看的照片：\($0)" } ?? "返回上次查看的照片")
+            }
+            if focusedGalleryItemID != nil {
+                Button {
+                    returnToFocusedGalleryItem()
+                } label: {
+                    Label("回到当前查看", systemImage: "scope")
+                }
+                .buttonStyle(.bordered)
+                .help(focusedGalleryItemName.map { "回到当前查看的照片：\($0)" } ?? "回到当前查看的照片")
+            }
+            Button {
+                galleryScrollToTopToken &+= 1
+            } label: {
+                Label("回到顶部", systemImage: "arrow.up.to.line")
+            }
+            .buttonStyle(.bordered)
+            .help("回到照片库顶部")
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var statusFooter: some View {
@@ -585,9 +744,16 @@ struct ContentView: View {
         }
         .font(.caption)
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 16)
-        .frame(height: 30)
-        .background(.bar)
+        .padding(.horizontal, 12)
+        .frame(height: 27)
+        .background(
+            Color(nsColor: .controlBackgroundColor).opacity(0.82),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+        }
     }
 
     private var statusFooterMessage: String {
@@ -603,8 +769,8 @@ struct ContentView: View {
     private var pageBackground: some View {
         LinearGradient(
             colors: [
-                Color(nsColor: .windowBackgroundColor),
-                Color(nsColor: .underPageBackgroundColor).opacity(0.72)
+                Color(nsColor: .underPageBackgroundColor).opacity(0.78),
+                Color(nsColor: .windowBackgroundColor)
             ],
             startPoint: .top,
             endPoint: .bottom
@@ -638,40 +804,125 @@ struct ContentView: View {
         HStack(spacing: 5) {
             Image(systemName: systemImage)
             Text(title)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
             Text(value.formatted())
+                .font(.system(size: 12, weight: .medium).monospacedDigit())
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
         .font(.system(size: 12, weight: .medium))
+        .fixedSize(horizontal: true, vertical: false)
         .padding(.horizontal, 9)
         .padding(.vertical, 5)
-        .background(.thinMaterial, in: Capsule())
+        .background(
+            Color(nsColor: .controlBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+        )
         .overlay {
-            Capsule().stroke(Color.primary.opacity(0.06), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         }
     }
 
     private var thumbnailSizeControl: some View {
         HStack(spacing: 8) {
-            Image(systemName: "minus.magnifyingglass")
+            galleryZoomButton(
+                systemImage: "minus.magnifyingglass",
+                accessibilityLabel: "缩小照片",
+                direction: -1
+            )
             Slider(
                 value: Binding(
-                    get: { Double(galleryThumbnailSize) },
-                    set: { setGalleryThumbnailSize(CGFloat($0)) }
+                    get: { galleryZoomPosition },
+                    set: { setGalleryThumbnailSize(thumbnailSize(forZoomPosition: $0)) }
                 ),
-                in: Double(galleryThumbnailSizeRange.lowerBound)...Double(galleryThumbnailSizeRange.upperBound)
+                in: 0...1
             )
             .frame(width: 118)
-            Image(systemName: "plus.magnifyingglass")
+            galleryZoomButton(
+                systemImage: "plus.magnifyingglass",
+                accessibilityLabel: "放大照片",
+                direction: 1
+            )
         }
         .font(.caption)
         .foregroundStyle(.secondary)
         .padding(.horizontal, 9)
         .padding(.vertical, 5)
-        .background(.thinMaterial, in: Capsule())
+        .background(
+            Color(nsColor: .controlBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+        )
         .overlay {
-            Capsule().stroke(Color.primary.opacity(0.06), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         }
-        .help("调整照片墙缩略图大小；触控板也可以捏合缩放")
+        .help("调整照片墙大小；最大档进入单图画廊，触控板也可以捏合缩放")
+    }
+
+    private func galleryZoomButton(
+        systemImage: String,
+        accessibilityLabel: String,
+        direction: Int
+    ) -> some View {
+        Button {
+            stepGalleryZoom(direction: direction)
+        } label: {
+            Image(systemName: systemImage)
+                .frame(width: 26, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            Color.primary.opacity(0.045),
+            in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+        }
+        .disabled(canStepGalleryZoom(direction: direction) == false)
+        .accessibilityLabel(accessibilityLabel)
+        .help(direction < 0 ? "缩小一级" : "放大一级")
+    }
+
+    private var galleryZoomPosition: Double {
+        let lower = Double(galleryThumbnailSizeRange.lowerBound)
+        let upper = Double(galleryThumbnailSizeRange.upperBound)
+        let current = Double(min(upper, max(lower, galleryThumbnailSize)))
+        return log(current / lower) / log(upper / lower)
+    }
+
+    private func thumbnailSize(forZoomPosition position: Double) -> CGFloat {
+        let lower = Double(galleryThumbnailSizeRange.lowerBound)
+        let upper = Double(galleryThumbnailSizeRange.upperBound)
+        let clampedPosition = min(1, max(0, position))
+        return CGFloat(lower * pow(upper / lower, clampedPosition))
+    }
+
+    private func canStepGalleryZoom(direction: Int) -> Bool {
+        let tolerance: CGFloat = 0.5
+        if direction < 0 {
+            return galleryThumbnailSize > galleryThumbnailSizeRange.lowerBound + tolerance
+        }
+        return galleryThumbnailSize < galleryThumbnailSizeRange.upperBound - tolerance
+    }
+
+    private func stepGalleryZoom(direction: Int) {
+        let tolerance: CGFloat = 0.5
+        let target: CGFloat?
+        if direction < 0 {
+            target = galleryZoomStops.last { $0 < galleryThumbnailSize - tolerance }
+        } else {
+            target = galleryZoomStops.first { $0 > galleryThumbnailSize + tolerance }
+        }
+
+        guard let target else { return }
+        withAnimation(.easeInOut(duration: 0.16)) {
+            setGalleryThumbnailSize(target)
+        }
     }
 
     private var sortMenu: some View {
@@ -693,6 +944,20 @@ struct ContentView: View {
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .navigation) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.20)) {
+                    isSidebarVisible.toggle()
+                }
+            } label: {
+                Label(
+                    isSidebarVisible ? "隐藏边栏" : "显示边栏",
+                    systemImage: "sidebar.left"
+                )
+            }
+            .keyboardShortcut("b", modifiers: .command)
+            .help(isSidebarVisible ? "隐藏边栏（⌘B）" : "显示边栏（⌘B）")
+            .accessibilityIdentifier("workspace.sidebar.toggle")
+
             Button {
                 resetViewerContext()
                 library.chooseAndOpenFolder()
@@ -739,7 +1004,7 @@ struct ContentView: View {
             Button(role: .destructive) {
                 requestTrashSelectedItems()
             } label: {
-                Label("移入废纸篓精选", systemImage: "trash")
+                Label("将我喜欢移入废纸篓", systemImage: "trash")
             }
             .disabled(library.selectedCount == 0 || isWorking)
         }
@@ -800,7 +1065,7 @@ struct ContentView: View {
         case .all: return "photo.stack"
         case .live: return "livephoto"
         case .video: return "play.rectangle"
-        case .selected: return "checkmark.circle"
+        case .selected: return "heart.fill"
         }
     }
 
@@ -832,8 +1097,23 @@ struct ContentView: View {
     }
 
     private func setFocusedGalleryItem(_ item: PhotoItem?) {
-        focusedGalleryItemID = item?.id
-        focusedGalleryItemName = item?.fileName
+        guard let item else {
+            focusedGalleryItemID = nil
+            focusedGalleryItemName = nil
+            return
+        }
+
+        guard focusedGalleryItemID != item.id else {
+            focusedGalleryItemName = item.fileName
+            return
+        }
+
+        if let focusedGalleryItemID {
+            previousGalleryItemID = focusedGalleryItemID
+            previousGalleryItemName = focusedGalleryItemName
+        }
+        focusedGalleryItemID = item.id
+        focusedGalleryItemName = item.fileName
     }
 
     private func resetViewerContext() {
@@ -841,18 +1121,40 @@ struct ContentView: View {
         galleryScrollTargetID = nil
         focusedGalleryItemID = nil
         focusedGalleryItemName = nil
+        previousGalleryItemID = nil
+        previousGalleryItemName = nil
     }
 
     private func returnToFocusedGalleryItem() {
         guard let focusedGalleryItemID else { return }
         guard library.filteredPhotos.contains(where: { $0.id == focusedGalleryItemID }) else {
-            library.setStatus("刚刚查看的照片不在当前筛选结果中，请先调整筛选或搜索")
+            library.setStatus("当前查看的照片不在筛选结果中，请先调整筛选或搜索")
             return
         }
 
         galleryScrollTargetID = nil
         DispatchQueue.main.async {
             galleryScrollTargetID = focusedGalleryItemID
+        }
+    }
+
+    private func returnToPreviousGalleryItem() {
+        guard let previousGalleryItemID else { return }
+        guard let target = library.filteredPhotos.first(where: { $0.id == previousGalleryItemID }) else {
+            library.setStatus("上次查看的照片不在筛选结果中，请先调整筛选或搜索")
+            return
+        }
+
+        let currentID = focusedGalleryItemID
+        let currentName = focusedGalleryItemName
+        focusedGalleryItemID = target.id
+        focusedGalleryItemName = target.fileName
+        self.previousGalleryItemID = currentID
+        previousGalleryItemName = currentName
+
+        galleryScrollTargetID = nil
+        DispatchQueue.main.async {
+            galleryScrollTargetID = target.id
         }
     }
 
@@ -884,12 +1186,12 @@ struct ContentView: View {
             会被移到 macOS 废纸篓，不会永久删除。如果外接硬盘不支持废纸篓，会改为移入同目录下隐藏的 .MotionAlbumTrash 安全删除区。如果它有同名 MOV/MP4 实况视频，也会一起移动。
             """
         } else {
-            title = "将 \(items.count) 张精选照片移入废纸篓？"
+            title = "将“我喜欢”中的 \(items.count) 张照片移入废纸篓？"
             confirmationTitle = "移入废纸篓 \(items.count) 张"
             message = """
             将移动 \(items.count) 张照片及其配套视频，共 \(resourceCount) 个原始文件。
 
-            文件会优先进入 macOS 废纸篓；如果外接硬盘不支持废纸篓，会改为移入同目录下隐藏的 .MotionAlbumTrash 安全删除区。灵动相册会同时清理这些照片的精选、标签和封面帧记录。
+            文件会优先进入 macOS 废纸篓；如果外接硬盘不支持废纸篓，会改为移入同目录下隐藏的 .MotionAlbumTrash 安全删除区。灵动相册会同时清理这些照片的喜欢状态、标签和封面帧记录。
             """
         }
 

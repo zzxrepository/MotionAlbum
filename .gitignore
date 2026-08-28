@@ -17,6 +17,9 @@ bin/
 obj/
 LivePhotoViewer.WPF/bin/
 LivePhotoViewer.WPF/obj/
+LivePhotoViewer.WPF/dist/
+LivePhotoViewer.WPF.SelfTest/bin/
+LivePhotoViewer.WPF.SelfTest/obj/
 *.dll
 *.exe
 *.pdb

@@ -20,11 +20,11 @@ enum SelfTest {
         var failures: [String] = []
 
         let expectedOffsets: [String: UInt64?] = [
-            "IMG_20260617_140640.jpg": 5_540_912,
-            "IMG_20260617_141022.jpg": 4_747_784,
-            "IMG_20260617_151140.jpg": 5_934_399,
-            "IMG_20260617_192759.jpg": 4_787_971,
-            "IMG_20260617_200957.jpg": nil
+            "Honor_LivePhoto_01.jpg": 5_540_912,
+            "Honor_LivePhoto_02.jpg": 4_747_784,
+            "Honor_LivePhoto_03.jpg": 5_934_399,
+            "Honor_LivePhoto_04.jpg": 4_787_971,
+            "Honor_StillPhoto_01.jpg": nil
         ]
 
         let samples = findSamplesDirectory(expectedFileName: expectedOffsets.keys.sorted()[0])
@@ -42,7 +42,7 @@ enum SelfTest {
                 }
             }
 
-            let source = samples.appendingPathComponent("IMG_20260617_140640.jpg")
+            let source = samples.appendingPathComponent("Honor_LivePhoto_01.jpg")
             let tempDirectory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("MotionAlbumSelfTest-\(UUID().uuidString)", isDirectory: true)
             defer { try? FileManager.default.removeItem(at: tempDirectory) }
@@ -54,6 +54,23 @@ enum SelfTest {
                 try handle.close()
                 if header.count < 8 || String(data: header[4..<8], encoding: .ascii) != "ftyp" {
                     failures.append("提取视频缺少 ftyp 头")
+                }
+                if let range = try LivePhotoParser.embeddedVideoRange(in: source),
+                   let extractedSize = try videoURL.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+                    if UInt64(extractedSize) != range.length {
+                        failures.append("荣耀视频没有按精确范围提取")
+                    }
+                    if range.offset + range.length >= UInt64(beforeAttributes.fileSize ?? 0) {
+                        failures.append("荣耀私有尾数据仍被包含在视频范围内")
+                    }
+                    try Data([0x00]).write(to: videoURL)
+                    _ = try LivePhotoParser.extractVideo(from: source, cacheDirectory: tempDirectory)
+                    let repairedSize = try FileManager.default.attributesOfItem(atPath: videoURL.path)[.size] as? NSNumber
+                    if repairedSize?.uint64Value != range.length {
+                        failures.append("损坏的视频缓存没有被原子替换")
+                    }
+                } else {
+                    failures.append("荣耀视频范围解析失败")
                 }
                 let afterAttributes = try source.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
                 if beforeAttributes.fileSize != afterAttributes.fileSize ||
@@ -81,6 +98,13 @@ enum SelfTest {
                 if try LivePhotoParser.findVideoOffset(in: pairedVideo) != nil {
                     failures.append("MOV 文件被误当作内嵌实况图片")
                 }
+
+                try testAndroidMotionPhotoProtocols(videoURL: videoURL, in: tempDirectory)
+                try testCopiedPhoneSamples(
+                    samplesRoot: samples.deletingLastPathComponent(),
+                    videoURL: videoURL,
+                    in: tempDirectory
+                )
             } catch {
                 failures.append("视频提取异常：\(error.localizedDescription)")
             }
@@ -127,7 +151,7 @@ enum SelfTest {
             if samples == nil {
                 print("✅ 自检通过：24 MB 大文件扫描、废纸篓缺失文件处理、SQLite 图库索引")
             } else {
-                print("✅ 自检通过：5 个荣耀样本、苹果配对实况、视频提取、24 MB 大文件扫描、废纸篓缺失文件处理、SQLite 图库索引")
+                print("✅ 自检通过：荣耀/华为/Apple/Android V1-V2/OPPO 实况解析、精确视频提取、24 MB 大文件扫描、废纸篓与 SQLite 索引")
             }
             return 0
         }
@@ -165,6 +189,155 @@ enum SelfTest {
             }
         }
         return nil
+    }
+
+    private static func testAndroidMotionPhotoProtocols(videoURL: URL, in directory: URL) throws {
+        let videoData = try Data(contentsOf: videoURL)
+        let jpegPrefix = Data([0xFF, 0xD8, 0xFF, 0xE1])
+
+        let v1URL = directory.appendingPathComponent("XiaomiV1.jpg")
+        let v1XMP = #"<x:xmpmeta GCamera:MicroVideo="1" GCamera:MicroVideoOffset="\#(videoData.count)"/>"#
+        var v1Data = jpegPrefix + Data(v1XMP.utf8) + Data([0xFF, 0xD9])
+        let v1Offset = UInt64(v1Data.count)
+        v1Data.append(videoData)
+        try v1Data.write(to: v1URL)
+        let v1Range = try LivePhotoParser.embeddedVideoRange(in: v1URL)
+        if v1Range != EmbeddedVideoRange(
+            offset: v1Offset,
+            length: UInt64(videoData.count),
+            source: .androidMicroVideoV1
+        ) {
+            throw SelfTestError("小米/Google Motion Photo V1 范围解析错误")
+        }
+
+        let v2URL = directory.appendingPathComponent("XiaomiV2.jpg")
+        let v2XMP = """
+        <Container:Directory>
+          <Container:Item Item:Semantic="Primary" Item:Mime="image/jpeg"/>
+          <Container:Item Item:Mime="video/mp4" Item:Length="\(videoData.count)" Item:Semantic="MotionPhoto"/>
+        </Container:Directory>
+        """
+        var v2Data = jpegPrefix + Data(v2XMP.utf8) + Data([0xFF, 0xD9])
+        let v2Offset = UInt64(v2Data.count)
+        v2Data.append(videoData)
+        try v2Data.write(to: v2URL)
+        let v2Range = try LivePhotoParser.embeddedVideoRange(in: v2URL)
+        if v2Range != EmbeddedVideoRange(
+            offset: v2Offset,
+            length: UInt64(videoData.count),
+            source: .androidMotionPhotoV2
+        ) {
+            throw SelfTestError("小米/Google Motion Photo V2 范围解析错误")
+        }
+
+        let trailer = Data(repeating: 0x54, count: 128)
+        let oppoURL = directory.appendingPathComponent("OppoMotionPhoto.jpg")
+        let containerLength = videoData.count + trailer.count
+        let oppoXMP = """
+        <Container:Directory>
+          <Container:Item Item:Semantic="Primary" Item:Mime="image/jpeg"/>
+          <Container:Item Item:Semantic="MotionPhoto" Item:Length="\(containerLength)" Item:Mime="video/mp4"/>
+        </Container:Directory>
+        <rdf:Description OpCamera:VideoLength="\(videoData.count)"/>
+        """
+        var oppoData = jpegPrefix + Data(oppoXMP.utf8) + Data([0xFF, 0xD9])
+        let oppoOffset = UInt64(oppoData.count)
+        oppoData.append(videoData)
+        oppoData.append(trailer)
+        try oppoData.write(to: oppoURL)
+        let oppoRange = try LivePhotoParser.embeddedVideoRange(in: oppoURL)
+        if oppoRange != EmbeddedVideoRange(
+            offset: oppoOffset,
+            length: UInt64(videoData.count),
+            source: .oppoMotionPhoto
+        ) {
+            throw SelfTestError("OPPO trailer/纯视频范围解析错误")
+        }
+    }
+
+    private static func testCopiedPhoneSamples(
+        samplesRoot: URL,
+        videoURL: URL,
+        in directory: URL
+    ) throws {
+        let appleDirectory = samplesRoot.appendingPathComponent("Apple", isDirectory: true)
+        let applePairs = [
+            "Apple_LivePhoto_01",
+            "Apple_LivePhoto_02"
+        ]
+        for stem in applePairs {
+            let imageExtension = stem == "Apple_LivePhoto_02" ? "JPG" : "HEIC"
+            let imageURL = appleDirectory.appendingPathComponent("\(stem).\(imageExtension)")
+            let movieURL = appleDirectory.appendingPathComponent("\(stem).MOV")
+            guard FileManager.default.fileExists(atPath: imageURL.path),
+                  FileManager.default.fileExists(atPath: movieURL.path) else { continue }
+            let imageID = LivePhotoParser.imageContentIdentifier(in: imageURL)
+            let movieID = LivePhotoParser.videoContentIdentifier(in: movieURL)
+            if imageID == nil || imageID != movieID {
+                throw SelfTestError("Apple \(stem) 的元数据 UUID 配对失败")
+            }
+            let resolved = LivePhotoParser.resolvedCompanionVideos(
+                imageURLs: [imageURL],
+                videoURLs: [movieURL]
+            )
+            if resolved[imageURL.standardizedFileURL.path]?.standardizedFileURL != movieURL.standardizedFileURL {
+                throw SelfTestError("Apple \(stem) 未按 UUID 解析为 Live Photo")
+            }
+        }
+
+        let mismatchImageSource = appleDirectory.appendingPathComponent("Apple_LivePhoto_02.JPG")
+        let mismatchVideoSource = appleDirectory.appendingPathComponent("Apple_LivePhoto_01.MOV")
+        if FileManager.default.fileExists(atPath: mismatchImageSource.path),
+           FileManager.default.fileExists(atPath: mismatchVideoSource.path) {
+            let mismatchImage = directory.appendingPathComponent("SameName.JPG")
+            let mismatchVideo = directory.appendingPathComponent("SameName.MOV")
+            try FileManager.default.copyItem(at: mismatchImageSource, to: mismatchImage)
+            try FileManager.default.copyItem(at: mismatchVideoSource, to: mismatchVideo)
+            let resolved = LivePhotoParser.resolvedCompanionVideos(
+                imageURLs: [mismatchImage],
+                videoURLs: [mismatchVideo]
+            )
+            if resolved[mismatchImage.standardizedFileURL.path] != nil {
+                throw SelfTestError("Apple UUID 不一致的同名 JPG/MOV 被错误配对")
+            }
+        }
+
+        let huaweiDirectory = samplesRoot.appendingPathComponent("Huawei", isDirectory: true)
+        for name in ["Huawei_StillPhoto_01.jpg", "Huawei_StillPhoto_02.jpg"] {
+            let url = huaweiDirectory.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: url.path),
+               LivePhotoParser.isLivePhoto(url) {
+                throw SelfTestError("华为静态样本被误判为实况：\(name)")
+            }
+        }
+
+        let appleHEIC = appleDirectory.appendingPathComponent("Apple_LivePhoto_01.HEIC")
+        guard FileManager.default.fileExists(atPath: appleHEIC.path) else { return }
+        let syntheticHuawei = directory.appendingPathComponent("HuaweiEmbedded.HEIC")
+        try FileManager.default.copyItem(at: appleHEIC, to: syntheticHuawei)
+        let baseSize = try syntheticHuawei.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        let input = try FileHandle(forReadingFrom: videoURL)
+        let output = try FileHandle(forWritingTo: syntheticHuawei)
+        try output.seekToEnd()
+        while let data = try input.read(upToCount: LivePhotoParser.chunkSize), data.isEmpty == false {
+            try output.write(contentsOf: data)
+        }
+        var liveTail = Data(repeating: 0, count: 60)
+        liveTail.replaceSubrange(0..<5, with: Data("LIVE_".utf8))
+        try output.write(contentsOf: liveTail)
+        try input.close()
+        try output.close()
+        let videoSize = try videoURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        let range = try LivePhotoParser.embeddedVideoRange(in: syntheticHuawei)
+        if range != EmbeddedVideoRange(
+            offset: UInt64(baseSize),
+            length: UInt64(videoSize),
+            source: .huaweiHonor
+        ) {
+            throw SelfTestError(
+                "华为 HEIC 第二 ftyp/LIVE_ 协议解析错误：\(String(describing: range))，期望 offset=\(baseSize) length=\(videoSize)"
+            )
+        }
     }
 
     private static func sampleDirectories(under root: URL) -> [URL] {

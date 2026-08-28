@@ -4,8 +4,8 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Threading;
-using System.Threading.Tasks;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 
 namespace LivePhotoViewer.WPF.Core
 {
@@ -15,10 +15,10 @@ namespace LivePhotoViewer.WPF.Core
     public static class ThumbnailCache
     {
         private static readonly string CacheDir = Path.Combine(
-            Path.GetTempPath(), "LivePhotoViewer", "cache");
+            Path.GetTempPath(), "MotionAlbum", "cache");
 
         private static readonly string MetaDir = Path.Combine(
-            Path.GetTempPath(), "LivePhotoViewer", "meta");
+            Path.GetTempPath(), "MotionAlbum", "meta");
 
         static ThumbnailCache()
         {
@@ -83,20 +83,21 @@ namespace LivePhotoViewer.WPF.Core
         /// </summary>
         public static byte[]? GenerateThumbnailBytes(string filePath, int maxSize = 200)
         {
+            byte[]? shellThumbnail = ShellThumbnailProvider.CreateJpeg(filePath, maxSize);
+            if (shellThumbnail != null) return shellThumbnail;
             try
             {
-                using var stream = File.OpenRead(filePath);
-                using var img = System.Drawing.Image.FromStream(stream, false, false);
-                int w = img.Width;
-                int h = img.Height;
-                double ratio = Math.Min((double)maxSize / w, (double)maxSize / h);
-                int newW = Math.Max(1, (int)(w * ratio));
-                int newH = Math.Max(1, (int)(h * ratio));
-
-                using var thumb = img.GetThumbnailImage(newW, newH, null, IntPtr.Zero);
-                using var ms = new MemoryStream();
-                thumb.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
-                return ms.ToArray();
+                using var input = File.OpenRead(filePath);
+                BitmapFrame frame = BitmapFrame.Create(input, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+                double ratio = Math.Min(1, Math.Min((double)maxSize / frame.PixelWidth, (double)maxSize / frame.PixelHeight));
+                BitmapSource source = ratio < 1
+                    ? new TransformedBitmap(frame, new ScaleTransform(ratio, ratio))
+                    : frame;
+                var encoder = new JpegBitmapEncoder { QualityLevel = 88 };
+                encoder.Frames.Add(BitmapFrame.Create(source));
+                using var output = new MemoryStream();
+                encoder.Save(output);
+                return output.ToArray();
             }
             catch { return null; }
         }

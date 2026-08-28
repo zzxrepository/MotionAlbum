@@ -350,7 +350,7 @@ final class PhotoLibrary: ObservableObject {
             folder: currentFolder
         )
         revision &+= 1
-        statusMessage = item.isSelected ? "已加入精选：\(item.fileName)" : "已取消精选：\(item.fileName)"
+        statusMessage = item.isSelected ? "已加入我喜欢：\(item.fileName)" : "已取消喜欢：\(item.fileName)"
     }
 
     func addTag(_ rawTag: String, to item: PhotoItem) {
@@ -639,9 +639,9 @@ final class PhotoLibrary: ObservableObject {
 
     private var summaryText: String {
         if videoCount > 0 {
-            return "共 \(photos.count) 个 · 实况 \(liveCount) 张 · 视频 \(videoCount) 个 · 精选 \(selectedCount) 个 · 已打标签 \(taggedCount) 个"
+            return "共 \(photos.count) 个 · 实况 \(liveCount) 张 · 视频 \(videoCount) 个 · 喜欢 \(selectedCount) 个 · 已打标签 \(taggedCount) 个"
         }
-        return "共 \(photos.count) 张 · 实况 \(liveCount) 张 · 精选 \(selectedCount) 张 · 已打标签 \(taggedCount) 张"
+        return "共 \(photos.count) 张 · 实况 \(liveCount) 张 · 喜欢 \(selectedCount) 张 · 已打标签 \(taggedCount) 张"
     }
 
     private static func formatSeconds(_ seconds: Double) -> String {
@@ -776,12 +776,24 @@ final class PhotoLibrary: ObservableObject {
             candidateURLs = urls.filter { supportedFileExtensions.contains($0.pathExtension.lowercased()) }
         }
 
-        let sidecars = sidecarVideoURLs(from: candidateURLs)
-        let pairedVideoKeys = Set(candidateURLs
-            .filter { imageExtensions.contains($0.pathExtension.lowercased()) }
-            .map { sidecarKey(for: $0) })
+        let imageURLs = candidateURLs.filter {
+            imageExtensions.contains($0.pathExtension.lowercased())
+        }
+        let videoURLs = candidateURLs.filter {
+            videoExtensions.contains($0.pathExtension.lowercased())
+        }
+        let companions = LivePhotoParser.resolvedCompanionVideos(
+            imageURLs: imageURLs,
+            videoURLs: videoURLs
+        )
+        let pairedVideoPaths = Set(companions.values.map { $0.standardizedFileURL.path })
         let results = candidateURLs.compactMap { url in
-            descriptor(for: url, keys: keys, sidecars: sidecars, pairedVideoKeys: pairedVideoKeys)
+            descriptor(
+                for: url,
+                keys: keys,
+                companions: companions,
+                pairedVideoPaths: pairedVideoPaths
+            )
         }
         return results.sorted {
             $0.url.lastPathComponent.localizedStandardCompare($1.url.lastPathComponent) == .orderedAscending
@@ -795,14 +807,15 @@ final class PhotoLibrary: ObservableObject {
     nonisolated private static func descriptor(
         for url: URL,
         keys: Set<URLResourceKey>,
-        sidecars: [String: URL],
-        pairedVideoKeys: Set<String>
+        companions: [String: URL],
+        pairedVideoPaths: Set<String>
     ) -> PhotoFileDescriptor? {
         let extensionName = url.pathExtension.lowercased()
         let mediaKind: MediaKind
         if imageExtensions.contains(extensionName) {
             mediaKind = .image
-        } else if videoExtensions.contains(extensionName), pairedVideoKeys.contains(sidecarKey(for: url)) == false {
+        } else if videoExtensions.contains(extensionName),
+                  pairedVideoPaths.contains(url.standardizedFileURL.path) == false {
             mediaKind = .video
         } else {
             return nil
@@ -812,7 +825,9 @@ final class PhotoLibrary: ObservableObject {
               values.isRegularFile == true,
               values.isSymbolicLink != true,
               let size = values.fileSize else { return nil }
-        let companionVideoURL = mediaKind == .image ? sidecars[sidecarKey(for: url)] : nil
+        let companionVideoURL = mediaKind == .image
+            ? companions[url.standardizedFileURL.path]
+            : nil
         var companionVideoFileSize: Int64?
         var companionVideoModifiedAt: Date?
         if let companionVideoURL,
@@ -831,20 +846,6 @@ final class PhotoLibrary: ObservableObject {
             mediaKind: mediaKind,
             indexedLiveStatus: nil
         )
-    }
-
-    nonisolated private static func sidecarVideoURLs(from urls: [URL]) -> [String: URL] {
-        var sidecars: [String: URL] = [:]
-        for url in urls where videoExtensions.contains(url.pathExtension.lowercased()) {
-            sidecars[sidecarKey(for: url)] = url
-        }
-        return sidecars
-    }
-
-    nonisolated private static func sidecarKey(for url: URL) -> String {
-        let directory = url.deletingLastPathComponent().standardizedFileURL.path.lowercased()
-        let stem = url.deletingPathExtension().lastPathComponent.lowercased()
-        return "\(directory)/\(stem)"
     }
 
     nonisolated private static func relativeSelectionKey(for url: URL, root: URL) -> String {

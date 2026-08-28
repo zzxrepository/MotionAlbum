@@ -38,7 +38,6 @@ struct ViewerView: View {
     @State private var coverFrameErrorMessage: String?
     @State private var zoomScale = 1.0
     @State private var gestureBaseZoom = 1.0
-    @FocusState private var hasKeyboardFocus: Bool
 
     private let minimumZoom = 0.5
     private let maximumZoom = 5.0
@@ -52,8 +51,6 @@ struct ViewerView: View {
             footer
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .focusable()
-        .focused($hasKeyboardFocus)
         .task(id: item.cacheKey) {
             resetVideoForNewItem()
             resetCoverFrameEditor()
@@ -75,9 +72,6 @@ struct ViewerView: View {
             previewImage = loaded
             originalPreviewImage = loaded
             autoPlayIfNeeded()
-        }
-        .onAppear {
-            hasKeyboardFocus = true
         }
         .onReceive(item.$liveStatus) { status in
             if status == .live {
@@ -489,7 +483,11 @@ struct ViewerView: View {
             .keyboardShortcut("0", modifiers: .command)
 
             Button(action: onToggleSelection) {
-                Label(item.isSelected ? "取消精选" : "加入精选", systemImage: item.isSelected ? "checkmark.circle.fill" : "circle")
+                Label(
+                    item.isSelected ? "取消喜欢" : "加入我喜欢",
+                    systemImage: item.isSelected ? "heart.fill" : "heart"
+                )
+                .foregroundStyle(item.isSelected ? Color.red : Color.primary)
             }
             .disabled(isLibraryBusy)
 

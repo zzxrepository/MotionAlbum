@@ -40,6 +40,7 @@ struct MotionAlbumApp: App {
             ContentView()
         }
         .defaultSize(width: 1240, height: 800)
+        .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("打开照片文件夹…") {

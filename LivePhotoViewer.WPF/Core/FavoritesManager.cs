@@ -18,10 +18,23 @@ namespace LivePhotoViewer.WPF.Core
         {
             string dir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "LivePhotoViewer");
+                "MotionAlbum");
             Directory.CreateDirectory(dir);
             _filePath = Path.Combine(dir, "favorites.json");
+            MigrateLegacyFile(_filePath, "favorites.json");
             Load();
+        }
+
+        private static void MigrateLegacyFile(string destination, string fileName)
+        {
+            try
+            {
+                string legacy = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "LivePhotoViewer", fileName);
+                if (!File.Exists(destination) && File.Exists(legacy)) File.Copy(legacy, destination);
+            }
+            catch { }
         }
 
         private void Load()
@@ -101,5 +114,7 @@ namespace LivePhotoViewer.WPF.Core
             if (_favorites.Remove(d))
                 Save();
         }
+
+        public void Remove(string directory, string fileName) => SetFavorite(directory, fileName, false);
     }
 }

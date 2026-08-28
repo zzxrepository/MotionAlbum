@@ -11,7 +11,7 @@ enum PhotoFilter: String, CaseIterable, Identifiable {
     case all = "全部"
     case live = "仅实况"
     case video = "仅视频"
-    case selected = "已精选"
+    case selected = "我喜欢"
 
     var id: String { rawValue }
 }

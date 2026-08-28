@@ -14,7 +14,7 @@ namespace LivePhotoViewer.WPF.Core
         private static readonly string ConfigPath =
             Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "LivePhotoViewer",
+                "MotionAlbum",
                 ThemeConfigFileName);
 
         public enum Theme
@@ -37,7 +37,20 @@ namespace LivePhotoViewer.WPF.Core
         static ThemeManager()
         {
             Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath)!);
+            MigrateLegacyPreference();
             LoadThemePreference();
+        }
+
+        private static void MigrateLegacyPreference()
+        {
+            try
+            {
+                string legacy = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "LivePhotoViewer", ThemeConfigFileName);
+                if (!File.Exists(ConfigPath) && File.Exists(legacy)) File.Copy(legacy, ConfigPath);
+            }
+            catch { }
         }
 
         public static void ApplyTheme(Theme theme)

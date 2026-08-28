@@ -105,7 +105,7 @@ final class SelectionStore {
             let data = try JSONEncoder().encode(selections)
             try data.write(to: fileURL, options: .atomic)
         } catch {
-            AppLogger.warning("保存精选状态失败", error: error)
+            AppLogger.warning("保存喜欢状态失败", error: error)
         }
     }
 }

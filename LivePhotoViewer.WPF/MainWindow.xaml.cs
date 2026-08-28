@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -9,332 +10,410 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using LibVLCSharp.Shared;
 using LivePhotoViewer.WPF.Controls;
 using LivePhotoViewer.WPF.Core;
 using LivePhotoViewer.WPF.Models;
 using Microsoft.Win32;
+using VlcMedia = LibVLCSharp.Shared.Media;
+using VlcMediaPlayer = LibVLCSharp.Shared.MediaPlayer;
 
 namespace LivePhotoViewer.WPF
 {
     public partial class MainWindow : Window
     {
-        private readonly FavoritesManager _favManager = new();
-        private readonly TagsManager _tagsManager = new();
-        private string _currentDir = string.Empty;
-        private string _rootDir = string.Empty;
-        private List<PhotoItem> _photos = new();
-        private readonly Dictionary<string, ThumbnailCard> _cardMap = new();
-        private readonly SemaphoreSlim _thumbSemaphore = new(4, 4);
-        private CancellationTokenSource? _loadCts;
+        private enum LibraryFilter { All, Live, Video, Favorite }
 
-        // ========== 查看模式状态 ==========
+        private readonly FavoritesManager _favoriteStore = new();
+        private readonly TagsManager _tagStore = new();
+        private readonly RecentFoldersManager _recentFolders = new();
+        private readonly HoldFrameManager _holdFrameStore = new();
+        private readonly UserSettingsManager _settings = new();
+        private readonly LibraryIndexStore _libraryIndex = new();
+        private readonly IReadOnlyList<AppQuote> _quotes = QuoteManager.Load();
+        private readonly DispatcherTimer _quoteTimer = new() { Interval = TimeSpan.FromSeconds(12) };
+        private readonly Dictionary<string, ThumbnailCard> _cardMap = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, BitmapImage?> _thumbnailMap = new(StringComparer.OrdinalIgnoreCase);
+        private readonly SemaphoreSlim _thumbnailSemaphore = new(4, 4);
+        private readonly double[] _galleryZoomStops = { 72, 96, 126, 160, 220, 300, 420, 520, 720, 900, 1100 };
+
+        private List<PhotoItem> _photos = new();
+        private List<PhotoItem> _visiblePhotos = new();
+        private CancellationTokenSource? _loadCts;
+        private CancellationTokenSource? _showcasePreviewCts;
+        private string _currentDirectory = string.Empty;
+        private LibraryFilter _filter = LibraryFilter.All;
+        private string? _selectedTag;
+        private string _tagSidebarSignature = string.Empty;
+        private string? _focusedPhotoId;
+        private string? _previousFocusedPhotoId;
+        private double _galleryCardSize = 126;
+        private bool _isSidebarVisible = true;
+        private bool _suppressGalleryZoomEvent;
+        private double _galleryManipulationBaseSize;
+        private bool _groupByTime = true;
+        private bool _isWorking;
+        private int _quoteIndex;
+
         private int _viewerIndex = -1;
         private LibVLC? _libVlc;
-        private LibVLCSharp.Shared.MediaPlayer? _mediaPlayer;
-        private bool _isPlayingLive;
-        private CancellationTokenSource? _viewerCts;
+        private VlcMediaPlayer? _mediaPlayer;
+        private VlcMedia? _currentVlcMedia;
+        private int _mediaSessionId;
+        private bool _isEditingCoverFrame;
+        private bool _suppressCoverSlider;
 
-        // ========== 图片缩放状态 ==========
-        private double _currentScale = 1.0;
-        private bool _isDragging;
+        private double _viewerScale = 1;
+        private bool _isDraggingViewer;
         private Point _dragStart;
-        private Point _dragStartTranslate;
-        private DateTime _lastClickTime;
-        private Point _lastClickPos;
-
-        // ========== 目录切换防抖 ==========
-        private System.Windows.Threading.DispatcherTimer? _treeDebounceTimer;
-        private string? _pendingTreePath;
+        private Point _dragStartTranslation;
+        private DateTime _lastViewerClick;
+        private Point _lastViewerClickPosition;
+        private double _viewerManipulationBaseScale;
 
         public MainWindow()
         {
             InitializeComponent();
             Loaded += MainWindow_Loaded;
-            KeyDown += MainWindow_KeyDown;
             Closing += MainWindow_Closing;
+            SizeChanged += (_, _) =>
+            {
+                if (IsShowcaseMode && _visiblePhotos.Count > 0) RenderGallery();
+            };
         }
+
+        private bool IsShowcaseMode => _galleryCardSize >= 520;
 
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
+            _isSidebarVisible = _settings.SidebarVisible;
+            ApplySidebarVisibility();
             UpdateThemeButtonIcon();
-            // 延迟初始化 LibVLC，避免启动时卡顿
-            _ = Task.Run(() =>
+            UpdateFilterVisuals();
+            UpdateCounts();
+            try
             {
-                try
+                _libVlc = new LibVLC("--quiet", "--no-video-title-show", "--intf=dummy");
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"播放器初始化失败：{ex.Message}");
+            }
+
+            if (_quotes.Count > 0)
+            {
+                _quoteIndex = (int)((uint)Environment.TickCount % (uint)_quotes.Count);
+                QuoteText.Text = _quotes[_quoteIndex].DisplayText;
+                _quoteTimer.Tick += (_, _) =>
                 {
-                    _libVlc = new LibVLC("--quiet", "--no-video-title-show", "--intf=dummy");
-                }
-                catch (Exception ex)
-                {
-                    Dispatcher.InvokeAsync(() => StatusText.Text = $"播放器初始化失败: {ex.Message}");
-                }
-            });
+                    _quoteIndex = (_quoteIndex + 1) % _quotes.Count;
+                    QuoteText.Text = _quotes[_quoteIndex].DisplayText;
+                };
+                _quoteTimer.Start();
+            }
+
+            _recentFolders.RemoveUnavailable();
+            string? lastDirectory = _recentFolders.Paths.FirstOrDefault(Directory.Exists);
+            if (lastDirectory != null) _ = OpenDirectoryAsync(lastDirectory, remember: false);
         }
 
         private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
         {
-            _viewerCts?.Cancel();
             _loadCts?.Cancel();
-            // 异步释放 VLC 资源，避免阻塞关闭
-            _ = Task.Run(() =>
-            {
-                try { _mediaPlayer?.Stop(); } catch { }
-                Thread.Sleep(100);
-                try { _mediaPlayer?.Dispose(); } catch { }
-                try { _libVlc?.Dispose(); } catch { }
-            });
+            _showcasePreviewCts?.Cancel();
+            _quoteTimer.Stop();
+            StopMediaPlayback();
+            _mediaPlayer?.Dispose();
+            _libVlc?.Dispose();
         }
 
-        // ========== 文件夹加载 ==========
+        // MARK: - Folder and scanning
+
         private void BtnOpenFolder_Click(object sender, RoutedEventArgs e)
         {
             var dialog = new OpenFolderDialog
             {
-                Title = "选择照片文件夹",
-                InitialDirectory = string.IsNullOrEmpty(_rootDir)
-                    ? Environment.GetFolderPath(Environment.SpecialFolder.MyPictures)
-                    : _rootDir
+                Title = "选择包含手机照片的文件夹",
+                InitialDirectory = Directory.Exists(_currentDirectory)
+                    ? _currentDirectory
+                    : _recentFolders.Paths.FirstOrDefault(Directory.Exists)
+                        ?? Environment.GetFolderPath(Environment.SpecialFolder.MyPictures)
             };
-
-            if (dialog.ShowDialog() == true)
-            {
-                _rootDir = dialog.FolderName;
-                _ = BuildDirectoryTreeAsync(_rootDir);
-                _ = LoadDirectoryAsync(dialog.FolderName);
-            }
+            if (dialog.ShowDialog() == true) _ = OpenDirectoryAsync(dialog.FolderName);
         }
 
-        private void DirectoryTree_SelectedItemChanged(object sender, RoutedEventArgs e)
+        private void BtnRefresh_Click(object sender, RoutedEventArgs e)
         {
-            if (DirectoryTree.SelectedItem is DirectoryNode node)
+            if (Directory.Exists(_currentDirectory)) _ = OpenDirectoryAsync(_currentDirectory, remember: false);
+        }
+
+        private void IncludeSubfoldersCheckBox_Click(object sender, RoutedEventArgs e)
+        {
+            if (Directory.Exists(_currentDirectory)) _ = OpenDirectoryAsync(_currentDirectory, remember: false);
+        }
+
+        private void BtnRecentFolders_Click(object sender, RoutedEventArgs e)
+        {
+            _recentFolders.RemoveUnavailable();
+            var menu = new ContextMenu();
+            foreach (string path in _recentFolders.Paths)
             {
-                _pendingTreePath = node.FullPath;
-                if (_treeDebounceTimer == null)
+                var item = new MenuItem
                 {
-                    _treeDebounceTimer = new System.Windows.Threading.DispatcherTimer
-                    {
-                        Interval = TimeSpan.FromMilliseconds(150)
-                    };
-                    _treeDebounceTimer.Tick += (_, _) =>
-                    {
-                        _treeDebounceTimer?.Stop();
-                        if (!string.IsNullOrEmpty(_pendingTreePath))
-                        {
-                            _ = LoadDirectoryAsync(_pendingTreePath);
-                            _pendingTreePath = null;
-                        }
-                    };
-                }
-                _treeDebounceTimer.Stop();
-                _treeDebounceTimer.Start();
+                    Header = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar)) is { Length: > 0 } name ? name : path,
+                    ToolTip = path,
+                    IsEnabled = Directory.Exists(path)
+                };
+                item.Click += (_, _) => _ = OpenDirectoryAsync(path);
+                menu.Items.Add(item);
             }
+            if (menu.Items.Count > 0) menu.Items.Add(new Separator());
+            var clear = new MenuItem { Header = "清空历史目录" };
+            clear.Click += (_, _) => _recentFolders.Clear();
+            menu.Items.Add(clear);
+            menu.PlacementTarget = sender as Button;
+            menu.IsOpen = true;
         }
 
-        private async Task BuildDirectoryTreeAsync(string rootPath)
+        private async Task OpenDirectoryAsync(string path, bool remember = true)
         {
-            try
+            if (!Directory.Exists(path))
             {
-                StatusText.Text = "正在扫描目录...";
-                var rootNode = await Task.Run(() =>
-                {
-                    var node = new DirectoryNode
-                    {
-                        Name = Path.GetFileName(rootPath) ?? rootPath,
-                        FullPath = rootPath,
-                        PhotoCount = SafeCountJpg(rootPath)
-                    };
-                    AddSubDirectories(node, rootPath);
-                    return node;
-                });
-
-                DirectoryTree.Items.Clear();
-                DirectoryTree.Items.Add(rootNode);
-                StatusText.Text = string.Empty;
+                SetStatus($"打不开目录：{path}");
+                return;
             }
-            catch (Exception ex)
-            {
-                StatusText.Text = $"目录树加载失败: {ex.Message}";
-            }
-        }
 
-        private static int SafeCountJpg(string path)
-        {
-            try { return Directory.EnumerateFiles(path, "*.jpg").Count(); }
-            catch { return 0; }
-        }
-
-        private void AddSubDirectories(DirectoryNode parent, string path)
-        {
-            try
-            {
-                foreach (var dir in Directory.EnumerateDirectories(path).OrderBy(d => d))
-                {
-                    int count = SafeCountJpg(dir);
-                    var node = new DirectoryNode
-                    {
-                        Name = Path.GetFileName(dir),
-                        FullPath = dir,
-                        PhotoCount = count
-                    };
-                    AddSubDirectories(node, dir);
-
-                    // 只显示包含 jpg 文件或有子目录的文件夹
-                    if (count > 0 || node.Children.Count > 0)
-                    {
-                        parent.Children.Add(node);
-                    }
-                }
-            }
-            catch { }
-        }
-
-        private async Task LoadDirectoryAsync(string path)
-        {
             _loadCts?.Cancel();
             _loadCts = new CancellationTokenSource();
-            var token = _loadCts.Token;
-
-            _currentDir = path;
-            ThumbnailPanel.Children.Clear();
+            CancellationToken token = _loadCts.Token;
+            if (ViewerMode.Visibility == Visibility.Visible)
+            {
+                StopMediaPlayback();
+                ViewerMode.Visibility = Visibility.Collapsed;
+                GridMode.Visibility = Visibility.Visible;
+            }
+            _currentDirectory = Path.GetFullPath(path);
+            if (remember) _recentFolders.Add(_currentDirectory);
+            _focusedPhotoId = null;
+            _previousFocusedPhotoId = null;
+            _selectedTag = null;
             _cardMap.Clear();
-            StatusText.Text = "正在扫描文件夹...";
-            RefreshTagFilterCombo();
+            _thumbnailMap.Clear();
+            ThumbnailPanel.Children.Clear();
+            CurrentPathText.Text = _currentDirectory;
+            LibraryPathText.Text = _currentDirectory;
+            SetStatus("正在扫描照片与视频…");
+            SetWorking(true, 0, 1);
 
             try
             {
-                var jpgFiles = Directory.EnumerateFiles(path, "*.jpg")
-                    .OrderBy(f => f)
+                bool recursively = IncludeSubfoldersCheckBox.IsChecked == true;
+                var files = await Task.Run(() => EnumerateMediaFiles(_currentDirectory, recursively, token), token);
+                token.ThrowIfCancellationRequested();
+                var imagePaths = files.Where(LivePhotoExtractor.IsSupportedImage).ToList();
+                var videoPaths = files.Where(LivePhotoExtractor.IsSupportedVideo).ToList();
+                var companions = await Task.Run(
+                    () => LivePhotoExtractor.ResolveCompanionVideos(imagePaths, videoPaths), token);
+                var pairedVideos = companions.Values.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var index = await Task.Run(() => _libraryIndex.Load(_currentDirectory, recursively), token);
+
+                _photos = imagePaths.Select(imagePath => CreatePhotoItem(
+                        imagePath,
+                        MediaKind.Image,
+                        companions.GetValueOrDefault(imagePath)))
+                    .Concat(videoPaths
+                        .Where(videoPath => !pairedVideos.Contains(videoPath))
+                        .Select(videoPath => CreatePhotoItem(videoPath, MediaKind.Video, null)))
                     .ToList();
 
-                if (jpgFiles.Count == 0)
+                foreach (PhotoItem photo in _photos)
                 {
-                    StatusText.Text = $"{path}  |  0 张照片";
-                    _photos.Clear();
-                    return;
+                    photo.IsFavorite = _favoriteStore.IsFavorite(photo.Directory, photo.FileName);
+                    photo.Tags = _tagStore.GetTags(photo.Directory, photo.FileName);
+                    photo.HoldFrameTime = _holdFrameStore.Get(photo.FilePath);
+                    if (index.TryGetValue(photo.FilePath, out LibraryIndexEntry? entry) && entry.Matches(photo))
+                        entry.Apply(photo);
+                    if (!string.IsNullOrWhiteSpace(photo.CompanionVideoPath))
+                    {
+                        photo.IsLivePhoto = true;
+                        photo.LivePhotoSource = LivePhotoSource.AppleSidecar;
+                        photo.IsLiveStatusKnown = true;
+                    }
+                    if (photo.IsVideo)
+                    {
+                        photo.IsLiveStatusKnown = true;
+                        photo.IsMetadataLoaded = true;
+                    }
                 }
 
-                // 加载实况检测缓存
-                var liveCache = ThumbnailCache.LoadLiveCache(path) ?? new Dictionary<string, bool>();
-                var favSet = _favManager.GetFavorites(path);
-
-                // 标签筛选
-                string? selectedTag = TagFilterCombo.SelectedItem?.ToString();
-                bool hasTagFilter = !string.IsNullOrEmpty(selectedTag) && selectedTag != "全部";
-
-                _photos = jpgFiles.Select(fp => new PhotoItem
-                {
-                    FilePath = fp,
-                    FileName = Path.GetFileName(fp),
-                    Directory = path,
-                    IsLivePhoto = liveCache.TryGetValue(fp, out var cached) ? cached : false,
-                    IsFavorite = favSet.Contains(Path.GetFileName(fp)),
-                    Tags = _tagsManager.GetTags(path, Path.GetFileName(fp))
-                }).ToList();
-
-                // 逐步显示占位卡片
-                var cards = new List<ThumbnailCard>();
-                int cardCount = 0;
-                foreach (var photo in _photos)
-                {
-                    if (token.IsCancellationRequested) return;
-
-                    // 收藏筛选
-                    bool show = BtnFavFilter.IsChecked != true || photo.IsFavorite;
-                    if (!show) continue;
-
-                    // 标签筛选
-                    if (hasTagFilter && !photo.Tags.Contains(selectedTag!))
-                        continue;
-
-                    var card = new ThumbnailCard(photo.FilePath, photo.IsFavorite, isLoading: true);
-                    card.PhotoClicked += OnThumbnailClick;
-                    card.FavoriteToggled += OnFavoriteToggle;
-                    ThumbnailPanel.Children.Add(card);
-                    _cardMap[photo.FilePath] = card;
-                    cards.Add(card);
-
-                    cardCount++;
-                    if (cardCount % 20 == 0)
-                        await Task.Delay(1);
-                }
-
-                StatusText.Text = $"{Path.GetFileName(path)}  |  正在生成缩略图...";
-
-                // 后台并行生成缩略图和检测实况
-                var tasks = cards.Select(card => Task.Run(async () =>
-                {
-                    if (token.IsCancellationRequested) return;
-
-                    await _thumbSemaphore.WaitAsync(token);
-                    try
-                    {
-                        var photo = _photos.First(p => p.FilePath == card.FilePath);
-
-                        // 先尝试读取缓存
-                        string? cachedThumb = ThumbnailCache.GetThumbnailPath(card.FilePath);
-                        BitmapImage? bitmap = null;
-
-                        if (cachedThumb != null)
-                        {
-                            bitmap = LoadBitmapAsync(cachedThumb);
-                        }
-                        else
-                        {
-                            var bytes = ThumbnailCache.GenerateThumbnailBytes(card.FilePath, 200);
-                            if (bytes != null)
-                            {
-                                ThumbnailCache.SaveThumbnail(card.FilePath, bytes);
-                                bitmap = LoadBitmapFromBytes(bytes);
-                            }
-                        }
-
-                        // 实况检测（如果没有缓存）
-                        if (!liveCache.ContainsKey(card.FilePath))
-                        {
-                            photo.IsLivePhoto = LivePhotoExtractor.IsLivePhoto(card.FilePath);
-                            liveCache[card.FilePath] = photo.IsLivePhoto;
-                        }
-
-                        // 更新 UI
-                        await Dispatcher.InvokeAsync(() =>
-                        {
-                            if (token.IsCancellationRequested) return;
-                            card.SetLoaded(bitmap, photo.IsLivePhoto);
-                            card.SetTags(photo.Tags);
-                        });
-                    }
-                    catch { }
-                    finally
-                    {
-                        _thumbSemaphore.Release();
-                    }
-                }, token)).ToArray();
-
-                await Task.WhenAll(tasks);
-
-                // 保存实况缓存
-                ThumbnailCache.SaveLiveCache(path, liveCache);
-                UpdateStatus();
+                RenderGallery();
+                SetStatus($"已发现 {_photos.Count} 个媒体文件，正在识别实况并生成缩略图…");
+                await LoadThumbnailsAndDetectLiveAsync(token, recursively);
+                token.ThrowIfCancellationRequested();
+                RenderGallery();
+                SetStatus($"已加载 {_photos.Count} 个媒体文件");
             }
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
-                StatusText.Text = $"加载失败: {ex.Message}";
+                SetStatus($"加载失败：{ex.Message}");
+            }
+            finally
+            {
+                if (_loadCts?.Token == token) SetWorking(false);
             }
         }
 
-        private static BitmapImage? LoadBitmapAsync(string path)
+        private PhotoItem CreatePhotoItem(string path, MediaKind kind, string? companion)
+        {
+            var info = new FileInfo(path);
+            return new PhotoItem
+            {
+                FilePath = path,
+                FileName = Path.GetFileName(path),
+                Directory = Path.GetDirectoryName(path) ?? _currentDirectory,
+                CompanionVideoPath = companion,
+                MediaKind = kind,
+                FileSize = info.Exists ? info.Length : 0,
+                ModifiedAt = info.Exists ? info.LastWriteTime : DateTime.MinValue,
+                TimelineDate = info.Exists ? info.LastWriteTime : DateTime.MinValue
+            };
+        }
+
+        private static List<string> EnumerateMediaFiles(string root, bool recursively, CancellationToken token)
+        {
+            var result = new List<string>();
+            var pending = new Stack<string>();
+            pending.Push(root);
+            while (pending.Count > 0)
+            {
+                token.ThrowIfCancellationRequested();
+                string directory = pending.Pop();
+                try
+                {
+                    foreach (string file in Directory.EnumerateFiles(directory))
+                    {
+                        token.ThrowIfCancellationRequested();
+                        if (LivePhotoExtractor.IsSupportedImage(file) || LivePhotoExtractor.IsSupportedVideo(file))
+                            result.Add(file);
+                    }
+                    if (!recursively) continue;
+                    foreach (string child in Directory.EnumerateDirectories(directory))
+                    {
+                        try
+                        {
+                            var childInfo = new DirectoryInfo(child);
+                            if (childInfo.Name.Equals(".MotionAlbumTrash", StringComparison.OrdinalIgnoreCase)) continue;
+                            if ((childInfo.Attributes & FileAttributes.ReparsePoint) == 0)
+                                pending.Push(child);
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
+            }
+            return result;
+        }
+
+        private async Task LoadThumbnailsAndDetectLiveAsync(CancellationToken token, bool recursively)
+        {
+            SetWorking(true, 0, Math.Max(1, _photos.Count));
+            int completed = 0;
+            var tasks = _photos.Select(async photo =>
+            {
+                await _thumbnailSemaphore.WaitAsync(token);
+                try
+                {
+                    BitmapImage? bitmap = await Task.Run(() => LoadOrCreateThumbnail(photo.FilePath), token);
+                    if (!photo.IsVideo && !photo.IsMetadataLoaded)
+                    {
+                        PhotoMetadataInfo metadata = await Task.Run(() => PhotoMetadataReader.Read(photo.FilePath), token);
+                        if (metadata.PixelWidth > 0)
+                        {
+                            photo.Width = metadata.PixelWidth;
+                            photo.Height = metadata.PixelHeight;
+                        }
+                        photo.CapturedAt = metadata.CapturedAt;
+                        photo.TimelineDate = metadata.CapturedAt ?? photo.ModifiedAt;
+                        photo.DeviceText = metadata.DeviceText;
+                        photo.Software = metadata.Software ?? string.Empty;
+                        photo.Latitude = metadata.Latitude;
+                        photo.Longitude = metadata.Longitude;
+                        photo.IsMetadataLoaded = true;
+                    }
+                    if (!photo.IsVideo && !photo.IsLiveStatusKnown)
+                    {
+                        EmbeddedVideoRange? detectedRange = await Task.Run(() =>
+                        {
+                            return LivePhotoExtractor.TryGetEmbeddedVideoRange(photo.FilePath, out var range)
+                                ? (EmbeddedVideoRange?)range : null;
+                        }, token);
+                        if (detectedRange is EmbeddedVideoRange range)
+                        {
+                            photo.IsLivePhoto = true;
+                            photo.LivePhotoSource = range.Source;
+                        }
+                        photo.IsLiveStatusKnown = true;
+                    }
+
+                    int now = Interlocked.Increment(ref completed);
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        if (token.IsCancellationRequested) return;
+                        _thumbnailMap[photo.StableId] = bitmap;
+                        if (_cardMap.TryGetValue(photo.StableId, out var card))
+                        {
+                            card.SetLoaded(bitmap, photo.IsLivePhoto);
+                            card.SetTags(photo.Tags);
+                            card.SetDisplaySize(EffectiveCardWidth(), IsShowcaseMode);
+                        }
+                        WorkProgressBar.Value = now;
+                        if (now % 24 == 0 || now == _photos.Count)
+                        {
+                            UpdateCounts();
+                            SetStatus($"正在处理 {now}/{_photos.Count}…");
+                        }
+                    });
+                }
+                catch (OperationCanceledException) { }
+                catch { }
+                finally { _thumbnailSemaphore.Release(); }
+            }).ToArray();
+
+            await Task.WhenAll(tasks);
+            await Task.Run(() => _libraryIndex.Save(_currentDirectory, recursively, _photos), token);
+        }
+
+        private static BitmapImage? LoadOrCreateThumbnail(string path)
         {
             try
             {
-                var bmp = new BitmapImage();
-                bmp.BeginInit();
-                bmp.CacheOption = BitmapCacheOption.OnLoad;
-                bmp.UriSource = new Uri(path);
-                bmp.EndInit();
-                bmp.Freeze();
-                return bmp;
+                string? cached = ThumbnailCache.GetThumbnailPath(path);
+                if (cached != null) return LoadBitmap(cached, 700);
+                byte[]? bytes = ThumbnailCache.GenerateThumbnailBytes(path, 700);
+                if (bytes != null)
+                {
+                    ThumbnailCache.SaveThumbnail(path, bytes);
+                    return LoadBitmapFromBytes(bytes);
+                }
+                return LoadBitmap(path, 700);
+            }
+            catch { return null; }
+        }
+
+        private static BitmapImage? LoadBitmap(string path, int decodePixelWidth = 2400)
+        {
+            try
+            {
+                var image = new BitmapImage();
+                image.BeginInit();
+                image.CacheOption = BitmapCacheOption.OnLoad;
+                image.DecodePixelWidth = decodePixelWidth;
+                image.UriSource = new Uri(path, UriKind.Absolute);
+                image.EndInit();
+                image.Freeze();
+                return image;
             }
             catch { return null; }
         }
@@ -343,510 +422,1248 @@ namespace LivePhotoViewer.WPF
         {
             try
             {
-                var bmp = new BitmapImage();
-                bmp.BeginInit();
-                bmp.CacheOption = BitmapCacheOption.OnLoad;
-                bmp.StreamSource = new MemoryStream(bytes);
-                bmp.EndInit();
-                bmp.Freeze();
-                return bmp;
+                using var stream = new MemoryStream(bytes);
+                var image = new BitmapImage();
+                image.BeginInit();
+                image.CacheOption = BitmapCacheOption.OnLoad;
+                image.StreamSource = stream;
+                image.EndInit();
+                image.Freeze();
+                return image;
             }
             catch { return null; }
         }
 
-        // ========== 缩略图交互 ==========
-        private void OnThumbnailClick(object? sender, string filePath)
+        // MARK: - Gallery rendering and interaction
+
+        private void RenderGallery()
         {
-            int idx = _photos.FindIndex(p => p.FilePath == filePath);
-            if (idx >= 0) EnterViewerMode(idx);
-        }
+            if (!IsLoaded) return;
+            _visiblePhotos = ApplyFilterAndSort().ToList();
+            ThumbnailPanel.Children.Clear();
+            double cardWidth = EffectiveCardWidth();
+            string groupingFormat = _galleryCardSize < 150 ? "yyyy年M月" : "yyyy年M月d日";
+            var groups = _groupByTime
+                ? _visiblePhotos.GroupBy(photo => photo.TimelineDate.ToString(groupingFormat))
+                    .Select(group => (Label: group.Key, Items: group.ToList())).ToList()
+                : new List<(string Label, List<PhotoItem> Items)> { (string.Empty, _visiblePhotos) };
 
-        private void OnFavoriteToggle(object? sender, string filePath)
-        {
-            string name = Path.GetFileName(filePath);
-            bool newState = _favManager.Toggle(_currentDir, name);
-
-            var photo = _photos.FirstOrDefault(p => p.FilePath == filePath);
-            if (photo != null) photo.IsFavorite = newState;
-
-            if (BtnFavFilter.IsChecked == true && !newState)
+            foreach (var group in groups)
             {
-                _ = LoadDirectoryAsync(_currentDir);
-            }
-            UpdateStatus();
-        }
-
-        // ========== 标签筛选 ==========
-        private void RefreshTagFilterCombo()
-        {
-            string? previous = TagFilterCombo.SelectedItem?.ToString();
-            var tags = _tagsManager.GetAllTags(_currentDir).ToList();
-            tags.Sort();
-            tags.Insert(0, "全部");
-
-            TagFilterCombo.ItemsSource = tags;
-
-            if (previous != null && tags.Contains(previous))
-                TagFilterCombo.SelectedItem = previous;
-            else
-                TagFilterCombo.SelectedIndex = 0;
-        }
-
-        private void TagFilterCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            if (!string.IsNullOrEmpty(_currentDir))
-                _ = LoadDirectoryAsync(_currentDir);
-        }
-
-        private void BtnClearTagFilter_Click(object sender, RoutedEventArgs e)
-        {
-            TagFilterCombo.SelectedIndex = 0;
-        }
-
-        // ========== 查看模式 ==========
-        private void EnterViewerMode(int index)
-        {
-            if (_photos.Count == 0 || index < 0 || index >= _photos.Count) return;
-
-            _viewerIndex = index;
-            GridMode.Visibility = Visibility.Collapsed;
-            ViewerMode.Visibility = Visibility.Visible;
-            ViewerMode.Focusable = true;
-            ViewerMode.Focus();
-
-            LoadViewerPhoto(_viewerIndex);
-        }
-
-        private void ExitViewerMode()
-        {
-            StopLivePlayback();
-            ResetImageTransform();
-            ViewerMode.Visibility = Visibility.Collapsed;
-            GridMode.Visibility = Visibility.Visible;
-            _viewerIndex = -1;
-        }
-
-        private void LoadViewerPhoto(int index)
-        {
-            _viewerCts?.Cancel();
-            _viewerCts = new CancellationTokenSource();
-            StopLivePlayback();
-
-            var photo = _photos[index];
-
-            // 加载静态图片
-            var bmp = LoadBitmapAsync(photo.FilePath);
-            ViewerImage.Source = bmp;
-            ViewerImage.Visibility = Visibility.Visible;
-            ViewerVideoView.Visibility = Visibility.Collapsed;
-
-            // 更新信息栏
-            var fi = new FileInfo(photo.FilePath);
-            string type = photo.IsLivePhoto ? "实况照片" : "普通照片";
-            string res = bmp != null ? $"{bmp.PixelWidth} x {bmp.PixelHeight}" : "未知";
-            ViewerInfoText.Text = $"{photo.FileName}  |  {res}  |  {FormatBytes(fi.Length)}  |  {type}";
-
-            // 更新收藏按钮状态
-            UpdateViewerFavButton();
-
-            // 显示/隐藏播放按钮
-            BtnViewerPlay.Visibility = photo.IsLivePhoto ? Visibility.Visible : Visibility.Collapsed;
-
-            // 更新标签显示
-            UpdateViewerTags(photo);
-
-            // 重置缩放
-            ResetImageTransform();
-
-            // 预加载实况视频数据（后台提取但不播放）
-            if (photo.IsLivePhoto && _libVlc != null)
-            {
-                _ = Task.Run(() =>
+                if (_groupByTime)
                 {
-                    try
+                    var header = new DockPanel { Margin = new Thickness(2, 4, 2, 8), LastChildFill = true };
+                    header.Children.Add(new TextBlock
                     {
-                        string? tempMp4 = LivePhotoExtractor.ExtractMp4ToTemp(photo.FilePath);
-                        if (tempMp4 != null)
-                        {
-                            photo.TempMp4Path = tempMp4;
-                        }
-                    }
-                    catch { }
-                });
-            }
-        }
-
-        private void UpdateViewerTags(PhotoItem photo)
-        {
-            ViewerTagsPanel.Children.Clear();
-            foreach (var tag in photo.Tags)
-            {
-                var border = new Border
-                {
-                    Style = (Style)FindResource("TagChipStyle"),
-                    Child = new TextBlock
-                    {
-                        Text = tag,
-                        FontSize = 11,
-                        Foreground = Brushes.White,
+                        Text = group.Label,
+                        FontSize = IsShowcaseMode ? 18 : 16,
+                        FontWeight = FontWeights.SemiBold,
                         VerticalAlignment = VerticalAlignment.Center
-                    }
-                };
-
-                // 删除按钮
-                var removeBtn = new Button
-                {
-                    Content = " x",
-                    FontSize = 10,
-                    Foreground = Brushes.White,
-                    Background = Brushes.Transparent,
-                    BorderThickness = new Thickness(0),
-                    Padding = new Thickness(2, 0, 0, 0),
-                    Cursor = System.Windows.Input.Cursors.Hand,
-                    Tag = tag
-                };
-                removeBtn.Click += async (s, e) =>
-                {
-                    if (s is Button btn && btn.Tag is string t)
+                    });
+                    header.Children.Add(new TextBlock
                     {
-                        await _tagsManager.RemoveTagAsync(_currentDir, photo.FileName, t);
-                        photo.Tags.Remove(t);
-                        UpdateViewerTags(photo);
-                        RefreshTagFilterCombo();
-                        SyncThumbnailCardTags(photo.FilePath, photo.Tags);
+                        Text = $"  {group.Items.Count}",
+                        FontSize = 11,
+                        Foreground = (Brush)FindResource("SubTextBrush"),
+                        VerticalAlignment = VerticalAlignment.Center
+                    });
+                    header.Children.Add(new Border
+                    {
+                        Height = 1,
+                        Margin = new Thickness(10, 0, 0, 0),
+                        Background = (Brush)FindResource("BorderBrush"),
+                        VerticalAlignment = VerticalAlignment.Center
+                    });
+                    ThumbnailPanel.Children.Add(header);
+                }
 
-                        // 如果当前有标签筛选，需要重载以更新筛选结果
-                        string? selectedTag = TagFilterCombo.SelectedItem?.ToString();
-                        if (!string.IsNullOrEmpty(selectedTag) && selectedTag != "全部")
-                            _ = LoadDirectoryAsync(_currentDir);
-                    }
+                var panel = new WrapPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    HorizontalAlignment = IsShowcaseMode ? HorizontalAlignment.Center : HorizontalAlignment.Stretch,
+                    Margin = new Thickness(0, 0, 0, IsShowcaseMode ? 18 : 12)
                 };
+                if (IsShowcaseMode) panel.Width = cardWidth + 12;
+                foreach (PhotoItem photo in group.Items)
+                {
+                    if (!_cardMap.TryGetValue(photo.StableId, out var card))
+                    {
+                        bool thumbnailReady = _thumbnailMap.TryGetValue(photo.StableId, out BitmapImage? thumbnail);
+                        card = new ThumbnailCard(photo, isLoading: !thumbnailReady);
+                        card.PhotoFocused += OnThumbnailFocused;
+                        card.PhotoOpened += OnThumbnailOpened;
+                        card.FavoriteToggled += OnFavoriteToggled;
+                        card.RevealRequested += OnRevealRequested;
+                        card.TrashRequested += OnTrashRequested;
+                        _cardMap[photo.StableId] = card;
+                        if (thumbnailReady) card.SetLoaded(thumbnail, photo.IsLivePhoto);
+                    }
+                    card.Margin = new Thickness(IsShowcaseMode ? 4 : 4, 0, 4, IsShowcaseMode ? 18 : 8);
+                    card.SetDisplaySize(cardWidth, IsShowcaseMode);
+                    card.SetFocused(string.Equals(photo.StableId, _focusedPhotoId, StringComparison.OrdinalIgnoreCase));
+                    panel.Children.Add(card);
+                }
+                ThumbnailPanel.Children.Add(panel);
+            }
+            UpdateCounts();
+            VisibleCountText.Text = $"当前显示 {_visiblePhotos.Count:N0} 个";
+            ScheduleShowcasePreviewRefresh();
+        }
 
-                var panel = new StackPanel { Orientation = Orientation.Horizontal };
-                panel.Children.Add(border.Child);
-                panel.Children.Add(removeBtn);
-                border.Child = panel;
+        private void GalleryScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
+        {
+            if (IsShowcaseMode) ScheduleShowcasePreviewRefresh();
+        }
 
-                ViewerTagsPanel.Children.Add(border);
+        private async void ScheduleShowcasePreviewRefresh()
+        {
+            _showcasePreviewCts?.Cancel();
+            _showcasePreviewCts = new CancellationTokenSource();
+            CancellationToken token = _showcasePreviewCts.Token;
+            if (!IsShowcaseMode)
+            {
+                foreach (ThumbnailCard card in _cardMap.Values) card.SetHighResolutionPreview(false);
+                return;
+            }
+            try { await Task.Delay(100, token); }
+            catch (OperationCanceledException) { return; }
+            if (token.IsCancellationRequested || !IsShowcaseMode) return;
+
+            var viewport = new Rect(-80, -240, GalleryScrollViewer.ActualWidth + 160, GalleryScrollViewer.ActualHeight + 480);
+            foreach (ThumbnailCard card in _cardMap.Values)
+            {
+                bool isNearViewport = false;
+                try
+                {
+                    Point origin = card.TranslatePoint(new Point(0, 0), GalleryScrollViewer);
+                    isNearViewport = viewport.IntersectsWith(new Rect(origin, card.RenderSize));
+                }
+                catch { }
+                card.SetHighResolutionPreview(isNearViewport);
             }
         }
 
-        private void BtnAddTag_Click(object sender, RoutedEventArgs e)
+        private IEnumerable<PhotoItem> ApplyFilterAndSort()
         {
-            AddTagFromInput();
+            IEnumerable<PhotoItem> query = _photos;
+            query = _filter switch
+            {
+                LibraryFilter.Live => query.Where(photo => photo.IsLivePhoto),
+                LibraryFilter.Video => query.Where(photo => photo.IsVideo),
+                LibraryFilter.Favorite => query.Where(photo => photo.IsFavorite),
+                _ => query
+            };
+            if (!string.IsNullOrWhiteSpace(_selectedTag))
+                query = query.Where(photo => photo.Tags.Contains(_selectedTag, StringComparer.CurrentCultureIgnoreCase));
+            string search = SearchBox.Text.Trim();
+            if (search.Length > 0)
+            {
+                string[] terms = search.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                query = query.Where(photo => terms.All(term => MatchesSearch(photo, term)));
+            }
+            string sort = (SortComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Newest";
+            return sort switch
+            {
+                "Oldest" => query.OrderBy(photo => photo.TimelineDate)
+                    .ThenBy(photo => photo.FileName, StringComparer.CurrentCultureIgnoreCase),
+                "Modified" => query.OrderByDescending(photo => photo.ModifiedAt)
+                    .ThenBy(photo => photo.FileName, StringComparer.CurrentCultureIgnoreCase),
+                "Name" => query.OrderBy(photo => photo.FileName, StringComparer.CurrentCultureIgnoreCase),
+                _ => query.OrderByDescending(photo => photo.TimelineDate)
+                    .ThenBy(photo => photo.FileName, StringComparer.CurrentCultureIgnoreCase)
+            };
         }
 
-        private void TagInputBox_KeyDown(object sender, KeyEventArgs e)
+        private static bool MatchesSearch(PhotoItem photo, string term) =>
+            photo.FileName.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+            photo.Directory.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+            photo.DeviceText.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+            photo.Software.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+            photo.PlaceName.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+            photo.CoordinateText.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+            photo.Tags.Any(tag => tag.Contains(term, StringComparison.OrdinalIgnoreCase));
+
+        private double EffectiveCardWidth()
         {
-            if (e.Key == Key.Enter)
+            if (!IsShowcaseMode) return _galleryCardSize;
+            double available = Math.Max(320, GalleryScrollViewer.ViewportWidth - 72);
+            return Math.Min(_galleryCardSize, Math.Min(1100, available));
+        }
+
+        private void OnThumbnailFocused(object? sender, string filePath)
+        {
+            PhotoItem? photo = _photos.FirstOrDefault(item =>
+                string.Equals(item.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
+            if (photo != null) SetFocusedPhoto(photo);
+        }
+
+        private void OnThumbnailOpened(object? sender, string filePath)
+        {
+            int index = _visiblePhotos.FindIndex(photo =>
+                string.Equals(photo.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
+            if (index >= 0) EnterViewerMode(index);
+        }
+
+        private void SetFocusedPhoto(PhotoItem photo)
+        {
+            if (string.Equals(_focusedPhotoId, photo.StableId, StringComparison.OrdinalIgnoreCase)) return;
+            if (!string.IsNullOrWhiteSpace(_focusedPhotoId)) _previousFocusedPhotoId = _focusedPhotoId;
+            _focusedPhotoId = photo.StableId;
+            foreach (var pair in _cardMap)
+                pair.Value.SetFocused(string.Equals(pair.Key, _focusedPhotoId, StringComparison.OrdinalIgnoreCase));
+            BtnReturnCurrent.Visibility = Visibility.Visible;
+            BtnReturnPrevious.Visibility = string.IsNullOrWhiteSpace(_previousFocusedPhotoId)
+                ? Visibility.Collapsed : Visibility.Visible;
+        }
+
+        private void OnFavoriteToggled(object? sender, string filePath)
+        {
+            PhotoItem? photo = _photos.FirstOrDefault(item =>
+                string.Equals(item.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
+            if (photo == null) return;
+            _favoriteStore.SetFavorite(photo.Directory, photo.FileName, photo.IsFavorite);
+            SetStatus(photo.IsFavorite ? $"已加入我喜欢：{photo.FileName}" : $"已取消喜欢：{photo.FileName}");
+            if (_filter == LibraryFilter.Favorite && !photo.IsFavorite) RenderGallery();
+            else UpdateCounts();
+            UpdateViewerFavoriteButton();
+        }
+
+        private void OnRevealRequested(object? sender, string filePath)
+        {
+            try
             {
-                AddTagFromInput();
+                var startInfo = new ProcessStartInfo("explorer.exe") { UseShellExecute = true };
+                startInfo.ArgumentList.Add($"/select,{filePath}");
+                Process.Start(startInfo);
+            }
+            catch (Exception ex) { SetStatus($"无法在资源管理器中显示：{ex.Message}"); }
+        }
+
+        private async void OnTrashRequested(object? sender, string filePath)
+        {
+            PhotoItem? photo = _photos.FirstOrDefault(item =>
+                string.Equals(item.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
+            if (photo != null) await ConfirmAndTrashAsync(new List<PhotoItem> { photo });
+        }
+
+        private void FilterButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button button || button.Tag is not string value) return;
+            _filter = Enum.TryParse(value, out LibraryFilter parsed) ? parsed : LibraryFilter.All;
+            _selectedTag = null;
+            UpdateFilterVisuals();
+            RenderGallery();
+        }
+
+        private void UpdateFilterVisuals()
+        {
+            var buttons = new Dictionary<LibraryFilter, Button>
+            {
+                [LibraryFilter.All] = BtnFilterAll,
+                [LibraryFilter.Live] = BtnFilterLive,
+                [LibraryFilter.Video] = BtnFilterVideo,
+                [LibraryFilter.Favorite] = BtnFilterFavorite
+            };
+            foreach (var pair in buttons)
+                pair.Value.Background = pair.Key == _filter
+                    ? new SolidColorBrush(Color.FromArgb(48, 59, 130, 246))
+                    : Brushes.Transparent;
+            UpdateTagSidebarSelection();
+        }
+
+        private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            SearchHintText.Visibility = string.IsNullOrEmpty(SearchBox.Text)
+                ? Visibility.Visible : Visibility.Collapsed;
+            if (IsLoaded) RenderGallery();
+        }
+
+        private void SortComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (IsLoaded) RenderGallery();
+        }
+
+        private void GroupByTimeCheckBox_Click(object sender, RoutedEventArgs e)
+        {
+            _groupByTime = GroupByTimeCheckBox.IsChecked == true;
+            RenderGallery();
+        }
+
+        private void BtnReturnCurrent_Click(object sender, RoutedEventArgs e) => ScrollToPhoto(_focusedPhotoId);
+
+        private void BtnReturnPrevious_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(_previousFocusedPhotoId)) return;
+            string target = _previousFocusedPhotoId;
+            _previousFocusedPhotoId = _focusedPhotoId;
+            _focusedPhotoId = target;
+            foreach (var pair in _cardMap)
+                pair.Value.SetFocused(string.Equals(pair.Key, _focusedPhotoId, StringComparison.OrdinalIgnoreCase));
+            ScrollToPhoto(_focusedPhotoId);
+        }
+
+        private void ScrollToPhoto(string? stableId)
+        {
+            if (stableId != null && _cardMap.TryGetValue(stableId, out var card)) card.BringIntoView();
+            else SetStatus("这张照片不在当前筛选结果中");
+        }
+
+        private void BtnScrollTop_Click(object sender, RoutedEventArgs e) => GalleryScrollViewer.ScrollToTop();
+
+        // MARK: - Gallery zoom
+
+        private void GalleryZoomSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (_suppressGalleryZoomEvent) return;
+            _galleryCardSize = SizeForZoomPosition(e.NewValue);
+            if (IsLoaded) RenderGallery();
+        }
+
+        private void GalleryZoomOut_Click(object sender, RoutedEventArgs e) => StepGalleryZoom(-1);
+        private void GalleryZoomIn_Click(object sender, RoutedEventArgs e) => StepGalleryZoom(1);
+
+        private void StepGalleryZoom(int direction)
+        {
+            const double tolerance = 0.5;
+            double target = direction < 0
+                ? _galleryZoomStops.LastOrDefault(value => value < _galleryCardSize - tolerance)
+                : _galleryZoomStops.FirstOrDefault(value => value > _galleryCardSize + tolerance);
+            if (target <= 0) target = direction < 0 ? _galleryZoomStops[0] : _galleryZoomStops[^1];
+            SetGalleryCardSize(target);
+        }
+
+        private void SetGalleryCardSize(double size)
+        {
+            _galleryCardSize = Math.Clamp(size, _galleryZoomStops[0], _galleryZoomStops[^1]);
+            _suppressGalleryZoomEvent = true;
+            GalleryZoomSlider.Value = ZoomPositionForSize(_galleryCardSize);
+            _suppressGalleryZoomEvent = false;
+            RenderGallery();
+        }
+
+        private static double SizeForZoomPosition(double position)
+        {
+            const double lower = 72;
+            const double upper = 1100;
+            return lower * Math.Pow(upper / lower, Math.Clamp(position, 0, 1));
+        }
+
+        private static double ZoomPositionForSize(double size)
+        {
+            const double lower = 72;
+            const double upper = 1100;
+            return Math.Log(Math.Clamp(size, lower, upper) / lower) / Math.Log(upper / lower);
+        }
+
+        private void GalleryScrollViewer_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            if ((Keyboard.Modifiers & ModifierKeys.Control) == 0) return;
+            SetGalleryCardSize(SizeForZoomPosition(GalleryZoomSlider.Value + (e.Delta > 0 ? 0.045 : -0.045)));
+            e.Handled = true;
+        }
+
+        private void GalleryScrollViewer_ManipulationStarting(object sender, ManipulationStartingEventArgs e)
+        {
+            _galleryManipulationBaseSize = _galleryCardSize;
+            e.Mode = ManipulationModes.Scale | ManipulationModes.TranslateY;
+        }
+
+        private void GalleryScrollViewer_ManipulationDelta(object sender, ManipulationDeltaEventArgs e)
+        {
+            double scale = e.CumulativeManipulation.Scale.X;
+            if (double.IsFinite(scale) && scale > 0 && Math.Abs(scale - 1) > 0.004)
+            {
+                SetGalleryCardSize(_galleryManipulationBaseSize * scale);
                 e.Handled = true;
             }
         }
 
-        private async void AddTagFromInput()
+        // MARK: - Viewer
+
+        private void EnterViewerMode(int index)
         {
-            if (_viewerIndex < 0 || _viewerIndex >= _photos.Count) return;
-            var photo = _photos[_viewerIndex];
-            string tag = TagInputBox.Text.Trim();
-            if (string.IsNullOrEmpty(tag)) return;
-
-            await _tagsManager.AddTagAsync(_currentDir, photo.FileName, tag);
-            if (!photo.Tags.Contains(tag))
-                photo.Tags.Add(tag);
-
-            TagInputBox.Clear();
-            UpdateViewerTags(photo);
-            RefreshTagFilterCombo();
-            SyncThumbnailCardTags(photo.FilePath, photo.Tags);
-
-            // 如果当前有标签筛选，需要重载以更新筛选结果
-            string? selectedTag = TagFilterCombo.SelectedItem?.ToString();
-            if (!string.IsNullOrEmpty(selectedTag) && selectedTag != "全部")
-                _ = LoadDirectoryAsync(_currentDir);
+            if (index < 0 || index >= _visiblePhotos.Count) return;
+            _viewerIndex = index;
+            SetFocusedPhoto(_visiblePhotos[index]);
+            GridMode.Visibility = Visibility.Collapsed;
+            ViewerMode.Visibility = Visibility.Visible;
+            LoadViewerPhoto(index);
+            QueueAutoPlay();
         }
 
-        /// <summary>
-        /// 只更新对应缩略图卡片的标签显示，不重新加载整个目录
-        /// </summary>
-        private void SyncThumbnailCardTags(string filePath, List<string> tags)
+        private void ExitViewerMode()
         {
-            if (_cardMap.TryGetValue(filePath, out var card))
-            {
-                card.SetTags(tags);
-            }
+            StopMediaPlayback();
+            ResetViewerTransform();
+            ViewerMode.Visibility = Visibility.Collapsed;
+            GridMode.Visibility = Visibility.Visible;
+            RenderGallery();
+            Dispatcher.BeginInvoke(new Action(() => ScrollToPhoto(_focusedPhotoId)));
         }
 
-        private void StopLivePlayback()
+        private void LoadViewerPhoto(int index)
         {
-            _isPlayingLive = false;
-            ViewerPlayIconText.Text = "▶";
-            ViewerPlayLabelText.Text = "播放";
-            BtnViewerPlay.ToolTip = "播放实况";
+            if (index < 0 || index >= _visiblePhotos.Count) return;
+            StopMediaPlayback();
+            PhotoItem photo = _visiblePhotos[index];
+            _viewerIndex = index;
+            SetFocusedPhoto(photo);
+            ResetViewerTransform();
 
-            if (_mediaPlayer != null)
-            {
-                try
-                {
-                    _mediaPlayer.Stop();
-                }
-                catch { }
-            }
-
-            // 确保 VideoView 隐藏，图片显示
-            ViewerVideoView.Visibility = Visibility.Collapsed;
+            ViewerImage.Source = photo.IsVideo
+                ? LoadOrCreateThumbnail(photo.FilePath)
+                : LoadBitmap(photo.FilePath, 3200);
             ViewerImage.Visibility = Visibility.Visible;
+            ViewerVideoView.Visibility = Visibility.Collapsed;
+            BtnViewerPlay.Visibility = photo.IsLivePhoto || photo.IsVideo ? Visibility.Visible : Visibility.Collapsed;
+            BtnViewerPlay.IsEnabled = true;
+            BtnViewerEditCover.Visibility = photo.IsLivePhoto || photo.IsVideo ? Visibility.Visible : Visibility.Collapsed;
+            BtnViewerPlay.Content = photo.IsVideo ? "▶  播放视频" : "▶  播放实况";
+            string capturedAt = photo.CapturedAt is DateTime date ? $"  ·  {date:yyyy-MM-dd HH:mm:ss}" : string.Empty;
+            string device = photo.DeviceText.Length > 0 ? $"  ·  {photo.DeviceText}" : string.Empty;
+            string software = photo.Software.Length > 0 ? $"  ·  {photo.Software}" : string.Empty;
+            string location = photo.CoordinateText.Length > 0 ? $"  ·  {photo.CoordinateText}" : string.Empty;
+            ViewerInfoText.Text = $"{photo.FileName}  ·  {(photo.Width > 0 ? $"{photo.Width} × {photo.Height}  ·  " : string.Empty)}{FormatBytes(photo.FileSize)}{capturedAt}{device}{software}{location}  ·  {(photo.IsLivePhoto ? "实况照片" : photo.IsVideo ? "视频" : "照片")}";
+            BtnViewerPrevious.IsEnabled = index > 0;
+            BtnViewerNext.IsEnabled = index + 1 < _visiblePhotos.Count;
+            LeftNavZone.IsEnabled = BtnViewerPrevious.IsEnabled;
+            RightNavZone.IsEnabled = BtnViewerNext.IsEnabled;
+            CoverFrameEditor.Visibility = Visibility.Collapsed;
+            _isEditingCoverFrame = false;
+            UpdateViewerZoomControls();
+            UpdateViewerFavoriteButton();
+            UpdateViewerTags(photo);
         }
 
-        private void PlayLivePhoto()
+        private async void ViewerPlay_Click(object sender, RoutedEventArgs e)
         {
-            if (_viewerIndex < 0 || _viewerIndex >= _photos.Count) return;
-            var photo = _photos[_viewerIndex];
-            if (!photo.IsLivePhoto || _libVlc == null) return;
+            if (ViewerVideoView.Visibility == Visibility.Visible) { StopMediaPlayback(); return; }
+            await PlayCurrentMediaAsync();
+        }
 
-            // 如果已经提取过临时文件，直接播放；否则先提取
-            string? mp4Path = photo.TempMp4Path;
-            if (string.IsNullOrEmpty(mp4Path) || !File.Exists(mp4Path))
+        private async Task PlayCurrentMediaAsync()
+        {
+            if (_viewerIndex < 0 || _viewerIndex >= _visiblePhotos.Count) return;
+            if (_libVlc == null)
             {
-                mp4Path = LivePhotoExtractor.ExtractMp4ToTemp(photo.FilePath);
-                if (mp4Path == null) return;
-                photo.TempMp4Path = mp4Path;
+                try { _libVlc = new LibVLC("--quiet", "--no-video-title-show", "--intf=dummy"); }
+                catch (Exception ex) { SetStatus($"播放器初始化失败：{ex.Message}"); return; }
             }
-
-            // 确保 MediaPlayer 已创建
-            if (_mediaPlayer == null)
+            PhotoItem photo = _visiblePhotos[_viewerIndex];
+            int requestedIndex = _viewerIndex;
+            SetStatus("正在准备视频…");
+            string? path = await Task.Run(() => photo.IsVideo
+                ? photo.FilePath
+                : LivePhotoExtractor.GetPlayableVideoPath(photo.FilePath, photo.CompanionVideoPath));
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
             {
-                _mediaPlayer = new LibVLCSharp.Shared.MediaPlayer(_libVlc);
-                ViewerVideoView.MediaPlayer = _mediaPlayer;
-
-                // 播放结束事件 - 严禁在回调中直接 Stop/Dispose，只更新 UI
-                _mediaPlayer.EndReached += (s, e) =>
-                {
-                    Dispatcher.BeginInvoke(() =>
-                    {
-                        _isPlayingLive = false;
-                        ViewerPlayIconText.Text = "▶";
-                        ViewerPlayLabelText.Text = "播放";
-                        BtnViewerPlay.ToolTip = "播放实况";
-                        ViewerVideoView.Visibility = Visibility.Collapsed;
-                        ViewerImage.Visibility = Visibility.Visible;
-                    });
-                };
+                SetStatus("没有找到可播放的实况视频");
+                return;
             }
-
-            // 切换显示层
+            if (requestedIndex != _viewerIndex || ViewerMode.Visibility != Visibility.Visible) return;
+            EnsureMediaPlayer();
+            _currentVlcMedia?.Dispose();
+            _currentVlcMedia = new VlcMedia(_libVlc, new Uri(path));
+            _mediaSessionId++;
             ViewerImage.Visibility = Visibility.Collapsed;
             ViewerVideoView.Visibility = Visibility.Visible;
-
-            using var media = new Media(_libVlc, new Uri(mp4Path));
-            _mediaPlayer.Play(media);
-            _isPlayingLive = true;
-            ViewerPlayIconText.Text = "⏸";
-            ViewerPlayLabelText.Text = "暂停";
-            BtnViewerPlay.ToolTip = "暂停";
+            UpdateViewerZoomControls();
+            _mediaPlayer!.Play(_currentVlcMedia);
+            BtnViewerPlay.Content = photo.IsVideo ? "▣  显示封面" : "▣  显示照片";
         }
 
-        private void ToggleLivePlayback()
+        private void EnsureMediaPlayer()
         {
-            if (_isPlayingLive)
+            if (_mediaPlayer != null) return;
+            _mediaPlayer = new VlcMediaPlayer(_libVlc!);
+            ViewerVideoView.MediaPlayer = _mediaPlayer;
+            _mediaPlayer.EndReached += (_, _) =>
             {
-                StopLivePlayback();
-            }
-            else
-            {
-                PlayLivePhoto();
-            }
+                int endedSession = _mediaSessionId;
+                Dispatcher.BeginInvoke(new Action(async () => await FinishMediaPlaybackAsync(endedSession)));
+            };
         }
 
-        // ========== 查看器按钮事件 ==========
-        private void ViewerPrev_Click(object sender, RoutedEventArgs e)
+        private void StopMediaPlayback()
         {
-            if (_viewerIndex > 0)
+            _mediaSessionId++;
+            try { _mediaPlayer?.Stop(); } catch { }
+            _currentVlcMedia?.Dispose();
+            _currentVlcMedia = null;
+            ViewerVideoView.Visibility = Visibility.Collapsed;
+            if (_viewerIndex >= 0 && _viewerIndex < _visiblePhotos.Count)
             {
-                _viewerIndex--;
-                LoadViewerPhoto(_viewerIndex);
+                PhotoItem photo = _visiblePhotos[_viewerIndex];
+                ViewerImage.Visibility = Visibility.Visible;
+                BtnViewerPlay.Content = photo.IsVideo ? "▶  播放视频" : "▶  播放实况";
             }
+            UpdateViewerZoomControls();
         }
 
-        private void ViewerNext_Click(object sender, RoutedEventArgs e)
+        private async Task FinishMediaPlaybackAsync(int endedSession)
         {
-            if (_viewerIndex >= 0 && _viewerIndex < _photos.Count - 1)
+            if (endedSession != _mediaSessionId) return;
+            if (_viewerIndex < 0 || _viewerIndex >= _visiblePhotos.Count) { StopMediaPlayback(); return; }
+            PhotoItem photo = _visiblePhotos[_viewerIndex];
+            if (photo.HoldFrameTime is not double seconds || _mediaPlayer == null || _currentVlcMedia == null)
             {
-                _viewerIndex++;
-                LoadViewerPhoto(_viewerIndex);
+                StopMediaPlayback();
+                return;
             }
+            try
+            {
+                _mediaSessionId++;
+                _mediaPlayer.Play();
+                await Task.Delay(120);
+                long maximum = _mediaPlayer.Length > 0 ? _mediaPlayer.Length : long.MaxValue;
+                _mediaPlayer.Time = Math.Clamp((long)(seconds * 1000), 0, maximum);
+                await Task.Delay(40);
+                _mediaPlayer.SetPause(true);
+                ViewerImage.Visibility = Visibility.Collapsed;
+                ViewerVideoView.Visibility = Visibility.Visible;
+                BtnViewerPlay.Content = photo.IsVideo ? "▣  显示封面" : "▣  显示照片";
+                UpdateViewerZoomControls();
+            }
+            catch { StopMediaPlayback(); }
         }
 
-        private void ViewerPlay_Click(object sender, RoutedEventArgs e)
+        private void ViewerPrev_Click(object sender, RoutedEventArgs e) => NavigateViewer(-1);
+        private void ViewerNext_Click(object sender, RoutedEventArgs e) => NavigateViewer(1);
+
+        private void NavigateViewer(int offset)
         {
-            ToggleLivePlayback();
+            int target = _viewerIndex + offset;
+            if (target < 0 || target >= _visiblePhotos.Count) return;
+            LoadViewerPhoto(target);
+            QueueAutoPlay();
         }
+
+        private void QueueAutoPlay()
+        {
+            if (_viewerIndex < 0 || _viewerIndex >= _visiblePhotos.Count) return;
+            PhotoItem photo = _visiblePhotos[_viewerIndex];
+            if (!photo.IsLivePhoto && !photo.IsVideo) return;
+            int requestedIndex = _viewerIndex;
+            Dispatcher.BeginInvoke(new Action(async () =>
+            {
+                if (requestedIndex == _viewerIndex && ViewerMode.Visibility == Visibility.Visible)
+                    await PlayCurrentMediaAsync();
+            }));
+        }
+
+        private void ViewerClose_Click(object sender, RoutedEventArgs e) => ExitViewerMode();
 
         private void ViewerFav_Click(object sender, RoutedEventArgs e)
         {
-            if (_viewerIndex < 0 || _viewerIndex >= _photos.Count) return;
-            var photo = _photos[_viewerIndex];
-            string name = Path.GetFileName(photo.FilePath);
-            bool newState = _favManager.Toggle(_currentDir, name);
-            photo.IsFavorite = newState;
-            UpdateViewerFavButton();
-            UpdateStatus();
-
-            // 同步更新缩略图卡片上的收藏状态
-            if (_cardMap.TryGetValue(photo.FilePath, out var card))
-            {
-                card.IsFavorite = newState;
-            }
+            if (_viewerIndex < 0 || _viewerIndex >= _visiblePhotos.Count) return;
+            PhotoItem photo = _visiblePhotos[_viewerIndex];
+            photo.IsFavorite = !photo.IsFavorite;
+            _favoriteStore.SetFavorite(photo.Directory, photo.FileName, photo.IsFavorite);
+            if (_cardMap.TryGetValue(photo.StableId, out var card)) card.IsFavorite = photo.IsFavorite;
+            UpdateViewerFavoriteButton();
+            UpdateCounts();
         }
 
-        private void UpdateViewerFavButton()
+        private void UpdateViewerFavoriteButton()
         {
-            if (_viewerIndex < 0 || _viewerIndex >= _photos.Count) return;
-            bool isFav = _photos[_viewerIndex].IsFavorite;
-            ViewerFavIconText.Text = isFav ? "★" : "☆";
-            ViewerFavIconText.Foreground = isFav
-                ? new SolidColorBrush(Color.FromArgb(255, 255, 149, 0))
-                : (Brush)Application.Current.FindResource("TextBrush")!;
+            if (_viewerIndex < 0 || _viewerIndex >= _visiblePhotos.Count) return;
+            BtnViewerFavorite.Content = _visiblePhotos[_viewerIndex].IsFavorite ? "♥  我喜欢" : "♡  我喜欢";
+            BtnViewerFavorite.Foreground = _visiblePhotos[_viewerIndex].IsFavorite ? Brushes.Red : (Brush)FindResource("TextBrush");
         }
 
-        private void ViewerClose_Click(object sender, RoutedEventArgs e)
+        private void ViewerZoomOut_Click(object sender, RoutedEventArgs e) => SetViewerScale(_viewerScale / 1.2);
+        private void ViewerZoomIn_Click(object sender, RoutedEventArgs e) => SetViewerScale(_viewerScale * 1.2);
+        private void ViewerResetZoom_Click(object sender, RoutedEventArgs e) => ResetViewerTransform();
+
+        private void SetViewerScale(double scale)
         {
-            ExitViewerMode();
+            if (ViewerVideoView.Visibility == Visibility.Visible) return;
+            _viewerScale = Math.Clamp(scale, 0.1, 5);
+            ViewerScaleTransform.ScaleX = _viewerScale;
+            ViewerScaleTransform.ScaleY = _viewerScale;
+            BtnViewerZoomPercent.Content = $"{_viewerScale * 100:F0}%";
+            bool zoomed = _viewerScale > 1.01;
+            LeftNavZone.Visibility = zoomed ? Visibility.Collapsed : Visibility.Visible;
+            RightNavZone.Visibility = zoomed ? Visibility.Collapsed : Visibility.Visible;
+            UpdateViewerZoomControls();
         }
 
-        // ========== 图片缩放与拖拽 ==========
-        private void ResetImageTransform()
+        private void ResetViewerTransform()
         {
-            _currentScale = 1.0;
-            _isDragging = false;
+            _viewerScale = 1;
+            _isDraggingViewer = false;
             ViewerScaleTransform.ScaleX = 1;
             ViewerScaleTransform.ScaleY = 1;
+            BtnViewerZoomPercent.Content = "100%";
             ViewerTranslateTransform.X = 0;
             ViewerTranslateTransform.Y = 0;
             LeftNavZone.Visibility = Visibility.Visible;
             RightNavZone.Visibility = Visibility.Visible;
+            UpdateViewerZoomControls();
+        }
+
+        private void UpdateViewerZoomControls()
+        {
+            if (!IsLoaded) return;
+            bool canZoom = ViewerVideoView.Visibility != Visibility.Visible;
+            BtnViewerZoomOut.IsEnabled = canZoom && _viewerScale > 0.101;
+            BtnViewerZoomIn.IsEnabled = canZoom && _viewerScale < 4.999;
+            BtnViewerZoomPercent.IsEnabled = canZoom && Math.Abs(_viewerScale - 1) > 0.001;
         }
 
         private void ViewerImageContainer_MouseWheel(object sender, MouseWheelEventArgs e)
         {
-            if (ViewerImage.Source == null) return;
+            SetViewerScale(_viewerScale * (e.Delta > 0 ? 1.15 : 0.85));
+            e.Handled = true;
+        }
 
-            double delta = e.Delta > 0 ? 1.15 : 0.85;
-            double newScale = _currentScale * delta;
-            if (newScale > 5) newScale = 5;
-            if (newScale < 0.1) newScale = 0.1;
+        private void ViewerImageContainer_ManipulationStarting(object sender, ManipulationStartingEventArgs e)
+        {
+            _viewerManipulationBaseScale = _viewerScale;
+            e.Mode = ManipulationModes.Scale;
+        }
 
-            // 以鼠标位置为中心缩放
-            Point mouseOnImage = e.GetPosition(ViewerImage);
-            double mx = mouseOnImage.X - ViewerImage.ActualWidth / 2;
-            double my = mouseOnImage.Y - ViewerImage.ActualHeight / 2;
-
-            ViewerTranslateTransform.X += mx * (_currentScale - newScale);
-            ViewerTranslateTransform.Y += my * (_currentScale - newScale);
-            ViewerScaleTransform.ScaleX = newScale;
-            ViewerScaleTransform.ScaleY = newScale;
-            _currentScale = newScale;
-
-            // 缩放时隐藏左右翻页区，避免误触
-            bool isZoomed = _currentScale > 1.01;
-            LeftNavZone.Visibility = isZoomed ? Visibility.Collapsed : Visibility.Visible;
-            RightNavZone.Visibility = isZoomed ? Visibility.Collapsed : Visibility.Visible;
-
+        private void ViewerImageContainer_ManipulationDelta(object sender, ManipulationDeltaEventArgs e)
+        {
+            double scale = e.CumulativeManipulation.Scale.X;
+            if (double.IsFinite(scale) && scale > 0) SetViewerScale(_viewerManipulationBaseScale * scale);
             e.Handled = true;
         }
 
         private void ViewerImageContainer_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
-            // 双击检测（300ms 内同位置再次点击）
-            var now = DateTime.Now;
-            var pos = e.GetPosition(ViewerImageContainer);
-            if ((now - _lastClickTime).TotalMilliseconds < 300 &&
-                Math.Abs(pos.X - _lastClickPos.X) < 5 &&
-                Math.Abs(pos.Y - _lastClickPos.Y) < 5)
+            Point position = e.GetPosition(ViewerImageContainer);
+            DateTime now = DateTime.Now;
+            if ((now - _lastViewerClick).TotalMilliseconds < 300 &&
+                Math.Abs(position.X - _lastViewerClickPosition.X) < 6 &&
+                Math.Abs(position.Y - _lastViewerClickPosition.Y) < 6)
             {
-                ResetImageTransform();
+                ResetViewerTransform();
                 e.Handled = true;
                 return;
             }
-            _lastClickTime = now;
-            _lastClickPos = pos;
-
-            if (_currentScale > 1.01)
-            {
-                _isDragging = true;
-                _dragStart = pos;
-                _dragStartTranslate = new Point(ViewerTranslateTransform.X, ViewerTranslateTransform.Y);
-                ViewerImageContainer.CaptureMouse();
-                e.Handled = true;
-            }
+            _lastViewerClick = now;
+            _lastViewerClickPosition = position;
+            if (_viewerScale <= 1.01) return;
+            _isDraggingViewer = true;
+            _dragStart = position;
+            _dragStartTranslation = new Point(ViewerTranslateTransform.X, ViewerTranslateTransform.Y);
+            ViewerImageContainer.CaptureMouse();
+            e.Handled = true;
         }
 
         private void ViewerImageContainer_MouseMove(object sender, MouseEventArgs e)
         {
-            if (_isDragging)
-            {
-                Point current = e.GetPosition(ViewerImageContainer);
-                ViewerTranslateTransform.X = _dragStartTranslate.X + (current.X - _dragStart.X);
-                ViewerTranslateTransform.Y = _dragStartTranslate.Y + (current.Y - _dragStart.Y);
-                e.Handled = true;
-            }
+            if (!_isDraggingViewer) return;
+            Point current = e.GetPosition(ViewerImageContainer);
+            ViewerTranslateTransform.X = _dragStartTranslation.X + current.X - _dragStart.X;
+            ViewerTranslateTransform.Y = _dragStartTranslation.Y + current.Y - _dragStart.Y;
+            e.Handled = true;
         }
 
         private void ViewerImageContainer_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
         {
-            if (_isDragging)
+            if (!_isDraggingViewer) return;
+            _isDraggingViewer = false;
+            ViewerImageContainer.ReleaseMouseCapture();
+            e.Handled = true;
+        }
+
+        private async void ViewerEditCover_Click(object sender, RoutedEventArgs e)
+        {
+            if (_viewerIndex < 0 || _viewerIndex >= _visiblePhotos.Count) return;
+            PhotoItem photo = _visiblePhotos[_viewerIndex];
+            string requestedId = photo.StableId;
+            StopMediaPlayback();
+            string? path = await Task.Run(() => photo.IsVideo
+                ? photo.FilePath
+                : LivePhotoExtractor.GetPlayableVideoPath(photo.FilePath, photo.CompanionVideoPath));
+            if (_viewerIndex < 0 || _viewerIndex >= _visiblePhotos.Count ||
+                !string.Equals(_visiblePhotos[_viewerIndex].StableId, requestedId, StringComparison.OrdinalIgnoreCase)) return;
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
             {
-                _isDragging = false;
-                ViewerImageContainer.ReleaseMouseCapture();
-                e.Handled = true;
+                SetStatus("没有找到可编辑的实况视频");
+                return;
+            }
+            try
+            {
+                if (_libVlc == null) _libVlc = new LibVLC("--quiet", "--no-video-title-show", "--intf=dummy");
+                EnsureMediaPlayer();
+                _currentVlcMedia?.Dispose();
+                _currentVlcMedia = new VlcMedia(_libVlc, new Uri(path));
+                _mediaSessionId++;
+                ViewerImage.Visibility = Visibility.Collapsed;
+                ViewerVideoView.Visibility = Visibility.Visible;
+                UpdateViewerZoomControls();
+                _mediaPlayer!.Play(_currentVlcMedia);
+                for (int attempt = 0; attempt < 20 && _mediaPlayer.Length <= 0; attempt++)
+                    await Task.Delay(75);
+                long duration = Math.Max(1, _mediaPlayer.Length);
+                long position = (long)Math.Clamp((photo.HoldFrameTime ?? 0) * 1000, 0, duration);
+                _suppressCoverSlider = true;
+                CoverFrameSlider.Maximum = duration;
+                CoverFrameSlider.Value = position;
+                _suppressCoverSlider = false;
+                _mediaPlayer.Time = position;
+                await Task.Delay(40);
+                _mediaPlayer.SetPause(true);
+                _isEditingCoverFrame = true;
+                CoverFrameEditor.Visibility = Visibility.Visible;
+                BtnViewerPlay.IsEnabled = false;
+                UpdateCoverFrameTime(position);
+                BtnViewerPlay.Content = photo.IsVideo ? "▣  显示封面" : "▣  显示照片";
+            }
+            catch (Exception ex)
+            {
+                StopMediaPlayback();
+                SetStatus($"停留画面编辑失败：{ex.Message}");
             }
         }
 
-        // ========== 键盘事件 ==========
-        private void MainWindow_KeyDown(object sender, KeyEventArgs e)
+        private void CoverFrameSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
-            if (ViewerMode.Visibility != Visibility.Visible) return;
+            if (_suppressCoverSlider || !_isEditingCoverFrame || _mediaPlayer == null) return;
+            long milliseconds = (long)e.NewValue;
+            try
+            {
+                _mediaPlayer.Time = milliseconds;
+                _mediaPlayer.SetPause(true);
+            }
+            catch { }
+            UpdateCoverFrameTime(milliseconds);
+        }
 
+        private void UpdateCoverFrameTime(long milliseconds)
+        {
+            TimeSpan time = TimeSpan.FromMilliseconds(Math.Max(0, milliseconds));
+            CoverFrameTimeText.Text = $"{(int)time.TotalMinutes:00}:{time.Seconds:00}.{time.Milliseconds:000}";
+        }
+
+        private void CoverFrameApply_Click(object sender, RoutedEventArgs e)
+        {
+            if (_viewerIndex < 0 || _viewerIndex >= _visiblePhotos.Count) return;
+            PhotoItem photo = _visiblePhotos[_viewerIndex];
+            photo.HoldFrameTime = CoverFrameSlider.Value / 1000.0;
+            _holdFrameStore.Set(photo.FilePath, photo.HoldFrameTime);
+            _isEditingCoverFrame = false;
+            CoverFrameEditor.Visibility = Visibility.Collapsed;
+            BtnViewerPlay.IsEnabled = true;
+            SetStatus($"已设置播放结束停留画面：{CoverFrameTimeText.Text}");
+        }
+
+        private void CoverFrameRestore_Click(object sender, RoutedEventArgs e)
+        {
+            if (_viewerIndex < 0 || _viewerIndex >= _visiblePhotos.Count) return;
+            PhotoItem photo = _visiblePhotos[_viewerIndex];
+            photo.HoldFrameTime = null;
+            _holdFrameStore.Set(photo.FilePath, null);
+            CoverFrameCancel_Click(sender, e);
+            SetStatus("已恢复使用原始封面");
+        }
+
+        private void CoverFrameCancel_Click(object sender, RoutedEventArgs e)
+        {
+            _isEditingCoverFrame = false;
+            CoverFrameEditor.Visibility = Visibility.Collapsed;
+            BtnViewerPlay.IsEnabled = true;
+            StopMediaPlayback();
+        }
+
+        private async void ViewerTrash_Click(object sender, RoutedEventArgs e)
+        {
+            if (_viewerIndex < 0 || _viewerIndex >= _visiblePhotos.Count) return;
+            await ConfirmAndTrashAsync(new List<PhotoItem> { _visiblePhotos[_viewerIndex] });
+        }
+
+        // MARK: - Tags
+
+        private void UpdateViewerTags(PhotoItem photo)
+        {
+            ViewerTagsPanel.Children.Clear();
+            foreach (string tag in photo.Tags.ToList())
+            {
+                var remove = new Button
+                {
+                    Content = $"{tag}  ×",
+                    Style = (Style)FindResource("FlatButtonStyle"),
+                    Tag = tag,
+                    Margin = new Thickness(0, 0, 6, 0)
+                };
+                remove.Click += async (_, _) =>
+                {
+                    await _tagStore.RemoveTagAsync(photo.Directory, photo.FileName, tag);
+                    photo.Tags.Remove(tag);
+                    if (_cardMap.TryGetValue(photo.StableId, out var card)) card.SetTags(photo.Tags);
+                    UpdateViewerTags(photo);
+                    UpdateCounts();
+                    if (string.Equals(_selectedTag, tag, StringComparison.CurrentCultureIgnoreCase)) RenderGallery();
+                };
+                ViewerTagsPanel.Children.Add(remove);
+            }
+        }
+
+        private void TagInputBox_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key != Key.Enter) return;
+            AddTagFromInput();
+            e.Handled = true;
+        }
+
+        private void BtnAddTag_Click(object sender, RoutedEventArgs e) => AddTagFromInput();
+
+        private async void AddTagFromInput()
+        {
+            if (_viewerIndex < 0 || _viewerIndex >= _visiblePhotos.Count) return;
+            string tag = TagInputBox.Text.Trim();
+            if (tag.Length == 0) return;
+            PhotoItem photo = _visiblePhotos[_viewerIndex];
+            await _tagStore.AddTagAsync(photo.Directory, photo.FileName, tag);
+            if (!photo.Tags.Contains(tag)) photo.Tags.Add(tag);
+            TagInputBox.Clear();
+            if (_cardMap.TryGetValue(photo.StableId, out var card)) card.SetTags(photo.Tags);
+            UpdateViewerTags(photo);
+            UpdateCounts();
+        }
+
+        private void UpdateTagSidebar()
+        {
+            var tags = _photos.SelectMany(photo => photo.Tags)
+                .GroupBy(tag => tag, StringComparer.CurrentCultureIgnoreCase)
+                .Select(group => (Name: group.Key, Count: group.Count()))
+                .OrderBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
+            if (_selectedTag != null && !tags.Any(item =>
+                    string.Equals(item.Name, _selectedTag, StringComparison.CurrentCultureIgnoreCase)))
+                _selectedTag = null;
+            string signature = string.Join("|", tags.Select(item => $"{item.Name}:{item.Count}"));
+            if (signature == _tagSidebarSignature)
+            {
+                UpdateTagSidebarSelection();
+                return;
+            }
+            _tagSidebarSignature = signature;
+            TagFilterPanel.Children.Clear();
+            foreach (var tag in tags)
+            {
+                var name = new TextBlock { Text = $"◇  {tag.Name}", TextTrimming = TextTrimming.CharacterEllipsis };
+                var count = new TextBlock
+                {
+                    Text = tag.Count.ToString("N0"),
+                    Foreground = (Brush)FindResource("SubTextBrush")
+                };
+                var content = new DockPanel();
+                DockPanel.SetDock(count, Dock.Right);
+                content.Children.Add(count);
+                content.Children.Add(name);
+                var button = new Button
+                {
+                    Tag = tag.Name,
+                    Content = content,
+                    Style = (Style)FindResource("SidebarRowStyle")
+                };
+                button.Click += TagFilterButton_Click;
+                TagFilterPanel.Children.Add(button);
+            }
+            TagFilterSeparator.Visibility = tags.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            UpdateTagSidebarSelection();
+        }
+
+        private void TagFilterButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button button || button.Tag is not string tag) return;
+            _selectedTag = string.Equals(_selectedTag, tag, StringComparison.CurrentCultureIgnoreCase) ? null : tag;
+            UpdateFilterVisuals();
+            RenderGallery();
+        }
+
+        private void UpdateTagSidebarSelection()
+        {
+            foreach (Button button in TagFilterPanel.Children.OfType<Button>())
+                button.Background = button.Tag is string tag &&
+                    string.Equals(tag, _selectedTag, StringComparison.CurrentCultureIgnoreCase)
+                        ? new SolidColorBrush(Color.FromArgb(48, 59, 130, 246))
+                        : Brushes.Transparent;
+        }
+
+        // MARK: - Sidebar actions
+
+        private void BtnToggleSidebar_Click(object sender, RoutedEventArgs e)
+        {
+            _isSidebarVisible = !_isSidebarVisible;
+            _settings.SidebarVisible = _isSidebarVisible;
+            ApplySidebarVisibility();
+        }
+
+        private void ApplySidebarVisibility()
+        {
+            SidebarColumn.Width = _isSidebarVisible ? new GridLength(246) : new GridLength(0);
+            SidebarPanel.Visibility = _isSidebarVisible ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private async void BtnExport_Click(object sender, RoutedEventArgs e)
+        {
+            if (_isWorking || _visiblePhotos.Count == 0) return;
+            var dialog = new OpenFolderDialog { Title = "选择导出目录" };
+            if (dialog.ShowDialog() != true) return;
+            int copied = 0;
+            SetStatus("正在导出…");
+            var sources = _visiblePhotos.SelectMany(photo => photo.OriginalResourcePaths)
+                .Distinct(StringComparer.OrdinalIgnoreCase).Where(File.Exists).ToList();
+            SetWorking(true, 0, Math.Max(1, sources.Count));
+            try
+            {
+                await Task.Run(() =>
+                {
+                    foreach (string source in sources)
+                    {
+                        string destination = UniqueDestination(dialog.FolderName, Path.GetFileName(source));
+                        File.Copy(source, destination);
+                        int done = Interlocked.Increment(ref copied);
+                        Dispatcher.BeginInvoke(new Action(() => WorkProgressBar.Value = done));
+                    }
+                });
+                SetStatus($"已导出 {copied} 个原始文件");
+            }
+            catch (Exception ex) { SetStatus($"导出失败：{ex.Message}"); }
+            finally { SetWorking(false); }
+        }
+
+        private async void BtnTrashFavorites_Click(object sender, RoutedEventArgs e)
+        {
+            var favorites = _photos.Where(photo => photo.IsFavorite).ToList();
+            if (favorites.Count == 0) { SetStatus("“我喜欢”中没有照片"); return; }
+            await ConfirmAndTrashAsync(favorites);
+        }
+
+        private async Task ConfirmAndTrashAsync(List<PhotoItem> photos)
+        {
+            if (_isWorking || photos.Count == 0) return;
+            if (MessageBox.Show(
+                    $"将 {photos.Count} 个媒体项目移入 Windows 回收站？\n配套的 MOV/MP4 也会一起移动。",
+                    "移入回收站",
+                    MessageBoxButton.OKCancel,
+                    MessageBoxImage.Warning) != MessageBoxResult.OK) return;
+
+            string? fallbackId = null;
+            if (ViewerMode.Visibility == Visibility.Visible && _viewerIndex >= 0 && _viewerIndex < _visiblePhotos.Count)
+            {
+                fallbackId = _visiblePhotos.Skip(_viewerIndex + 1).FirstOrDefault(item => !photos.Contains(item))?.StableId
+                    ?? _visiblePhotos.Take(_viewerIndex).LastOrDefault(item => !photos.Contains(item))?.StableId;
+                StopMediaPlayback();
+            }
+
+            var paths = photos.SelectMany(photo => photo.OriginalResourcePaths)
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            SetWorking(true, 0, Math.Max(1, paths.Count));
+            try
+            {
+                TrashResult result = await TrashService.MoveToTrashAsync(paths,
+                    (done, _) => Dispatcher.BeginInvoke(new Action(() => WorkProgressBar.Value = done)));
+                var removed = photos.Where(photo => !File.Exists(photo.FilePath)).ToList();
+                foreach (PhotoItem photo in removed)
+                {
+                    _favoriteStore.Remove(photo.Directory, photo.FileName);
+                    _tagStore.RemoveAll(photo.Directory, photo.FileName);
+                    _holdFrameStore.Remove(photo.FilePath);
+                    _cardMap.Remove(photo.StableId);
+                    _thumbnailMap.Remove(photo.StableId);
+                    _photos.Remove(photo);
+                }
+                RenderGallery();
+                if (ViewerMode.Visibility == Visibility.Visible)
+                {
+                    int target = fallbackId == null ? -1 : _visiblePhotos.FindIndex(item =>
+                        string.Equals(item.StableId, fallbackId, StringComparison.OrdinalIgnoreCase));
+                    if (target >= 0) LoadViewerPhoto(target); else ExitViewerMode();
+                }
+                SetStatus(result.FailedCount == 0
+                    ? $"已将 {removed.Count} 个媒体项目移入回收站"
+                    : $"已移入 {removed.Count} 个，{result.FailedCount} 个文件失败");
+            }
+            catch (Exception ex) { SetStatus($"移入回收站失败：{ex.Message}"); }
+            finally { SetWorking(false); }
+        }
+
+        private async void BtnSyncAndroid_Click(object sender, RoutedEventArgs e)
+        {
+            if (_isWorking) return;
+            var paths = _photos.Where(photo => photo.IsFavorite)
+                .SelectMany(photo => photo.OriginalResourcePaths)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Where(File.Exists)
+                .ToList();
+            if (paths.Count == 0) { SetStatus("“我喜欢”中没有可同步的文件"); return; }
+            string? adb = FindExecutable("adb.exe") ?? FindExecutable("adb");
+            if (adb == null) { SetStatus("未找到 adb，请先安装 Android platform-tools"); return; }
+            if (MessageBox.Show(
+                    $"将 {paths.Count} 个原始文件同步到安卓手机的 DCIM/MotionAlbum，并在完成后尝试打开微信？",
+                    "同步到安卓手机",
+                    MessageBoxButton.OKCancel,
+                    MessageBoxImage.Question) != MessageBoxResult.OK) return;
+            SetStatus($"正在同步 0/{paths.Count}…");
+            SetWorking(true, 0, Math.Max(1, paths.Count));
+            const string remoteDirectory = "/sdcard/DCIM/MotionAlbum";
+            try
+            {
+                string devicesOutput = await RunProcessAsync(adb, "devices");
+                int deviceCount = devicesOutput.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Skip(1)
+                    .Count(line => line.EndsWith("\tdevice", StringComparison.Ordinal));
+                if (deviceCount == 0) { SetStatus("没有检测到已授权的安卓手机"); return; }
+                if (deviceCount > 1) { SetStatus("检测到多台安卓设备，请暂时只连接一台"); return; }
+
+                await RunProcessAsync(adb, "shell", "mkdir", "-p", remoteDirectory);
+                for (int index = 0; index < paths.Count; index++)
+                {
+                    string fileName = SanitizeAndroidFileName(Path.GetFileName(paths[index]));
+                    string remotePath = $"{remoteDirectory}/{fileName}";
+                    await RunProcessAsync(adb, "push", paths[index], remotePath);
+                    await RunProcessAsync(
+                        adb, "shell", "am", "broadcast",
+                        "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+                        "-d", $"file://{remotePath}");
+                    WorkProgressBar.Value = index + 1;
+                    SetStatus($"正在同步 {index + 1}/{paths.Count}…");
+                }
+                try
+                {
+                    await RunProcessAsync(adb, "shell", "monkey", "-p", "com.tencent.mm", "-c", "android.intent.category.LAUNCHER", "1");
+                }
+                catch { }
+                SetStatus($"已同步 {paths.Count} 个原始文件到安卓手机：{remoteDirectory}");
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"同步失败：{ex.Message}");
+            }
+            finally { SetWorking(false); }
+        }
+
+        private static string SanitizeAndroidFileName(string fileName) => new(
+            fileName.Select(character => char.IsLetterOrDigit(character) || character is '.' or '_' or '-'
+                ? character : '_').ToArray());
+
+        private static string UniqueDestination(string directory, string fileName)
+        {
+            string destination = Path.Combine(directory, fileName);
+            if (!File.Exists(destination)) return destination;
+            string stem = Path.GetFileNameWithoutExtension(fileName);
+            string extension = Path.GetExtension(fileName);
+            for (int index = 2; ; index++)
+            {
+                destination = Path.Combine(directory, $"{stem} ({index}){extension}");
+                if (!File.Exists(destination)) return destination;
+            }
+        }
+
+        private static string? FindExecutable(string name)
+        {
+            foreach (string directory in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+                         .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string candidate = Path.Combine(directory.Trim().Trim('"'), name);
+                if (File.Exists(candidate)) return candidate;
+            }
+            return null;
+        }
+
+        private static async Task<string> RunProcessAsync(string executable, params string[] arguments)
+        {
+            var startInfo = new ProcessStartInfo(executable)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            foreach (string argument in arguments) startInfo.ArgumentList.Add(argument);
+            using var process = Process.Start(startInfo);
+            if (process == null) throw new InvalidOperationException($"无法启动 {Path.GetFileName(executable)}");
+            Task<string> outputTask = process.StandardOutput.ReadToEndAsync();
+            Task<string> errorTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            string output = await outputTask;
+            string error = await errorTask;
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? output.Trim() : error.Trim());
+            return output;
+        }
+
+        // MARK: - Keyboard, theme and status
+
+        private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            bool control = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+            if (control && e.Key == Key.B)
+            {
+                BtnToggleSidebar_Click(sender, e);
+                e.Handled = true;
+                return;
+            }
+            if (control && e.Key == Key.O)
+            {
+                BtnOpenFolder_Click(sender, e);
+                e.Handled = true;
+                return;
+            }
+            if (control && e.Key == Key.R)
+            {
+                BtnRefresh_Click(sender, e);
+                e.Handled = true;
+                return;
+            }
+            if (control && e.Key == Key.E)
+            {
+                BtnExport_Click(sender, e);
+                e.Handled = true;
+                return;
+            }
+            if (control && e.Key is Key.OemPlus or Key.Add)
+            {
+                if (ViewerMode.Visibility == Visibility.Visible) ViewerZoomIn_Click(sender, e);
+                else StepGalleryZoom(1);
+                e.Handled = true;
+                return;
+            }
+            if (control && e.Key is Key.OemMinus or Key.Subtract)
+            {
+                if (ViewerMode.Visibility == Visibility.Visible) ViewerZoomOut_Click(sender, e);
+                else StepGalleryZoom(-1);
+                e.Handled = true;
+                return;
+            }
+            if (control && (e.Key is Key.D0 or Key.NumPad0) && ViewerMode.Visibility == Visibility.Visible)
+            {
+                ResetViewerTransform();
+                e.Handled = true;
+                return;
+            }
+            if (Keyboard.FocusedElement is TextBox or ComboBox) return;
+
+            if (ViewerMode.Visibility == Visibility.Visible)
+            {
+                switch (e.Key)
+                {
+                    case Key.Escape: ExitViewerMode(); break;
+                    case Key.Left:
+                    case Key.A: NavigateViewer(-1); break;
+                    case Key.Right:
+                    case Key.D: NavigateViewer(1); break;
+                    case Key.Space: ViewerPlay_Click(sender, e); break;
+                    default: return;
+                }
+                e.Handled = true;
+                return;
+            }
+
+            if (_visiblePhotos.Count == 0) return;
+            int current = _focusedPhotoId == null ? -1 : _visiblePhotos.FindIndex(photo =>
+                string.Equals(photo.StableId, _focusedPhotoId, StringComparison.OrdinalIgnoreCase));
+            if (e.Key == Key.Enter)
+            {
+                EnterViewerMode(Math.Max(0, current));
+                e.Handled = true;
+                return;
+            }
+
+            int columns = IsShowcaseMode ? 1 : Math.Max(1, (int)(Math.Max(1, GalleryScrollViewer.ViewportWidth - 36) / (_galleryCardSize + 8)));
+            int target = current < 0 ? 0 : current;
             switch (e.Key)
             {
-                case Key.Escape:
-                    ExitViewerMode();
-                    e.Handled = true;
-                    break;
                 case Key.Left:
-                    ViewerPrev_Click(sender, e);
-                    e.Handled = true;
-                    break;
+                case Key.A: target--; break;
                 case Key.Right:
-                    ViewerNext_Click(sender, e);
-                    e.Handled = true;
-                    break;
-                case Key.Space:
-                    ToggleLivePlayback();
-                    e.Handled = true;
-                    break;
+                case Key.D: target++; break;
+                case Key.Up:
+                case Key.W: target = VerticalNavigationTargetIndex(current, columns, movingDown: false); break;
+                case Key.Down:
+                case Key.S: target = VerticalNavigationTargetIndex(current, columns, movingDown: true); break;
+                default: return;
             }
+            target = Math.Clamp(target, 0, _visiblePhotos.Count - 1);
+            SetFocusedPhoto(_visiblePhotos[target]);
+            ScrollToPhoto(_focusedPhotoId);
+            e.Handled = true;
         }
 
-        // ========== 收藏筛选 ==========
-        private void BtnFavFilter_Checked(object sender, RoutedEventArgs e)
+        private int VerticalNavigationTargetIndex(int currentIndex, int columnCount, bool movingDown)
         {
-            if (!string.IsNullOrEmpty(_currentDir))
-                _ = LoadDirectoryAsync(_currentDir);
+            if (currentIndex < 0) return 0;
+            if (!_groupByTime)
+                return Math.Clamp(currentIndex + (movingDown ? columnCount : -columnCount), 0, _visiblePhotos.Count - 1);
+
+            string format = _galleryCardSize < 150 ? "yyyy年M月" : "yyyy年M月d日";
+            var sections = _visiblePhotos.GroupBy(photo => photo.TimelineDate.ToString(format))
+                .Select(group => group.ToList()).ToList();
+            PhotoItem current = _visiblePhotos[currentIndex];
+            int sectionIndex = sections.FindIndex(section => section.Contains(current));
+            if (sectionIndex < 0) return currentIndex;
+            int itemIndex = sections[sectionIndex].IndexOf(current);
+            int column = itemIndex % columnCount;
+            if (movingDown)
+            {
+                if (itemIndex + columnCount < sections[sectionIndex].Count)
+                    return _visiblePhotos.IndexOf(sections[sectionIndex][itemIndex + columnCount]);
+                if (sectionIndex + 1 >= sections.Count) return currentIndex;
+                PhotoItem target = sections[sectionIndex + 1][Math.Min(column, sections[sectionIndex + 1].Count - 1)];
+                return _visiblePhotos.IndexOf(target);
+            }
+            if (itemIndex - columnCount >= 0)
+                return _visiblePhotos.IndexOf(sections[sectionIndex][itemIndex - columnCount]);
+            if (sectionIndex == 0) return currentIndex;
+            List<PhotoItem> previous = sections[sectionIndex - 1];
+            int lastRowStart = ((previous.Count - 1) / columnCount) * columnCount;
+            PhotoItem previousTarget = previous[lastRowStart + Math.Min(column, previous.Count - 1 - lastRowStart)];
+            return _visiblePhotos.IndexOf(previousTarget);
         }
 
-        private void BtnFavFilter_Unchecked(object sender, RoutedEventArgs e)
+        private void BtnThemeToggle_Click(object sender, RoutedEventArgs e)
         {
-            if (!string.IsNullOrEmpty(_currentDir))
-                _ = LoadDirectoryAsync(_currentDir);
+            ThemeManager.ToggleTheme();
+            UpdateThemeButtonIcon();
+            UpdateFilterVisuals();
+            RenderGallery();
         }
 
-        private void UpdateStatus()
+        private void UpdateThemeButtonIcon()
         {
-            int total = _photos.Count;
-            int favCount = _photos.Count(p => p.IsFavorite);
-            StatusText.Text = $"{Path.GetFileName(_currentDir)}  |  共 {total} 张  |  已收藏 {favCount} 张";
+            var (icon, tooltip) = ThemeManager.GetThemeDisplay();
+            ThemeIconText.Text = icon;
+            BtnThemeToggle.ToolTip = $"当前：{tooltip}（点击切换）";
+        }
+
+        private void UpdateCounts()
+        {
+            int all = _photos.Count;
+            int live = _photos.Count(photo => photo.IsLivePhoto);
+            int video = _photos.Count(photo => photo.IsVideo);
+            int favorite = _photos.Count(photo => photo.IsFavorite);
+            int tagged = _photos.Count(photo => photo.Tags.Count > 0);
+            AllCountText.Text = all.ToString("N0");
+            LiveCountText.Text = live.ToString("N0");
+            VideoCountText.Text = video.ToString("N0");
+            FavoriteCountText.Text = favorite.ToString("N0");
+            MetricAllText.Text = $"▣  全部  {all:N0}";
+            MetricLiveText.Text = $"◎  实况  {live:N0}";
+            MetricVideoText.Text = $"▶  视频  {video:N0}";
+            MetricFavoriteText.Text = $"♥  喜欢  {favorite:N0}";
+            MetricTagText.Text = $"◇  标签  {tagged:N0}";
+            UpdateTagSidebar();
+        }
+
+        private void SetStatus(string value) => StatusText.Text = value;
+
+        private void SetWorking(bool working, int value = 0, int maximum = 1)
+        {
+            _isWorking = working;
+            WorkProgressBar.Minimum = 0;
+            WorkProgressBar.Maximum = Math.Max(1, maximum);
+            WorkProgressBar.Value = Math.Clamp(value, 0, Math.Max(1, maximum));
+            WorkProgressBar.Visibility = working ? Visibility.Visible : Visibility.Collapsed;
+            BtnExport.IsEnabled = !working;
+            BtnSyncAndroid.IsEnabled = !working;
+            BtnTrashFavorites.IsEnabled = !working;
+            BtnViewerTrash.IsEnabled = !working;
         }
 
         private static string FormatBytes(long bytes)
@@ -855,21 +1672,6 @@ namespace LivePhotoViewer.WPF
             if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
             if (bytes < 1024L * 1024 * 1024) return $"{bytes / (1024.0 * 1024):F1} MB";
             return $"{bytes / (1024.0 * 1024 * 1024):F2} GB";
-        }
-
-        // ========== 主题切换 ==========
-        private void BtnThemeToggle_Click(object sender, RoutedEventArgs e)
-        {
-            ThemeManager.ToggleTheme();
-            UpdateThemeButtonIcon();
-        }
-
-        private void UpdateThemeButtonIcon()
-        {
-            var (icon, tooltip) = ThemeManager.GetThemeDisplay();
-            ThemeIconText.Text = icon;
-            ThemeLabelText.Text = tooltip;
-            BtnThemeToggle.ToolTip = $"当前: {tooltip} (点击切换)";
         }
     }
 }

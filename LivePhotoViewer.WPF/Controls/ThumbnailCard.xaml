@@ -1,100 +1,116 @@
 <UserControl x:Class="LivePhotoViewer.WPF.Controls.ThumbnailCard"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             Width="200" Height="260">
-    <Border Background="{DynamicResource CardBgBrush}"
+             Focusable="True"
+             Cursor="Hand">
+    <Border x:Name="CardBorder"
+            Background="{DynamicResource CardBgBrush}"
+            BorderBrush="{DynamicResource BorderBrush}"
+            BorderThickness="1"
             CornerRadius="10"
-            BorderThickness="2"
-            BorderBrush="Transparent"
-            x:Name="CardBorder">
+            Padding="8">
         <Border.Effect>
-            <DropShadowEffect ShadowDepth="2" BlurRadius="12" Color="#30000000"/>
+            <DropShadowEffect ShadowDepth="1" BlurRadius="6" Opacity="0.10"/>
         </Border.Effect>
 
         <Grid>
             <Grid.RowDefinitions>
-                <RowDefinition Height="180"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <!-- 图片区域 -->
-            <Border Grid.Row="0"
-                     Background="{DynamicResource ThumbPlaceholderBgBrush}"
-                     CornerRadius="8"
-                     Margin="8,8,8,4"
-                     ClipToBounds="True">
+            <Border x:Name="ImageHost"
+                    Grid.Row="0"
+                    Background="{DynamicResource ThumbPlaceholderBgBrush}"
+                    CornerRadius="7"
+                    ClipToBounds="True">
                 <Grid>
-                    <!-- 加载动画 -->
-                    <Border x:Name="LoadingOverlay"
-                             Background="{DynamicResource ThumbPlaceholderBgBrush}">
-                        <TextBlock Text="加载中..."
-                                  HorizontalAlignment="Center"
-                                  VerticalAlignment="Center"
-                                  Foreground="{DynamicResource DimTextBrush}"
-                                  FontSize="12"/>
-                    </Border>
+                    <TextBlock x:Name="LoadingText"
+                               Text="加载中…"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource DimTextBrush}"
+                               FontSize="12"/>
 
                     <Image x:Name="ThumbImage"
-                           Stretch="Uniform"
+                           Stretch="UniformToFill"
                            RenderOptions.BitmapScalingMode="HighQuality"
                            Visibility="Collapsed"/>
 
-                    <!-- LIVE 角标 -->
-                    <Border x:Name="LiveBadge"
-                             HorizontalAlignment="Left"
-                             VerticalAlignment="Top"
-                             Background="{DynamicResource LiveBadgeBrush}"
-                             CornerRadius="8"
-                             Padding="6,2"
-                             Margin="6,6,0,0"
-                             Visibility="Collapsed">
-                        <TextBlock Text="LIVE"
-                                  Foreground="White"
-                                  FontSize="10"
-                                  FontWeight="Bold"/>
+                    <Border x:Name="FocusBadge"
+                            HorizontalAlignment="Left"
+                            VerticalAlignment="Top"
+                            Background="#F59E0B"
+                            CornerRadius="10"
+                            Padding="7,3"
+                            Margin="8"
+                            Visibility="Collapsed">
+                        <TextBlock Text="👁  当前查看" Foreground="White" FontSize="10" FontWeight="SemiBold"/>
                     </Border>
 
-                    <!-- 收藏按钮 -->
-                    <Button x:Name="FavButton"
+                    <Border x:Name="MediaBadge"
+                            HorizontalAlignment="Left"
+                            VerticalAlignment="Bottom"
+                            Background="#B8000000"
+                            CornerRadius="10"
+                            Padding="7,3"
+                            Margin="8"
+                            Visibility="Collapsed">
+                        <TextBlock x:Name="MediaBadgeText" Foreground="White" FontSize="10" FontWeight="Bold"/>
+                    </Border>
+
+                    <Button x:Name="FavoriteButton"
                             HorizontalAlignment="Right"
                             VerticalAlignment="Top"
-                            Width="28" Height="28"
-                            Margin="0,6,6,0"
-                            Click="FavButton_Click">
-                        <Button.Template>
-                            <ControlTemplate TargetType="Button">
-                                <Border Background="{TemplateBinding Background}"
-                                       CornerRadius="14">
-                                    <ContentPresenter HorizontalAlignment="Center"
-                                                      VerticalAlignment="Center"/>
-                                </Border>
-                            </ControlTemplate>
-                        </Button.Template>
-                        <TextBlock x:Name="FavIcon"
-                                  Text="☆"
-                                  FontSize="16"
-                                  Foreground="{DynamicResource DimTextBrush}"/>
+                            Width="38"
+                            Height="38"
+                            Margin="4"
+                            Background="Transparent"
+                            BorderThickness="0"
+                            Cursor="Hand"
+                            Click="FavoriteButton_Click"
+                            ToolTip="加入我喜欢">
+                        <TextBlock x:Name="FavoriteIcon"
+                                   Text="♡"
+                                   FontFamily="Segoe UI Symbol"
+                                   FontSize="28"
+                                   FontWeight="SemiBold"
+                                   Foreground="White">
+                            <TextBlock.Effect>
+                                <DropShadowEffect BlurRadius="3" ShadowDepth="1" Opacity="0.8"/>
+                            </TextBlock.Effect>
+                        </TextBlock>
                     </Button>
                 </Grid>
             </Border>
 
-            <!-- 标签区域 -->
-            <WrapPanel x:Name="TagsPanel"
-                      Grid.Row="1"
-                      Margin="8,2,8,2"
-                      Orientation="Horizontal">
-                <!-- 动态填充标签 -->
-            </WrapPanel>
-
-            <!-- 文件名 -->
-            <TextBlock Grid.Row="2"
-                       x:Name="FileNameText"
-                       TextTrimming="CharacterEllipsis"
-                       TextAlignment="Center"
-                       FontSize="12"
-                       Foreground="{DynamicResource SubTextBrush}"
-                       Margin="8,2,8,8"/>
+            <Grid x:Name="DetailsPanel" Grid.Row="1" Margin="3,9,3,1">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                    <TextBlock x:Name="FileNameText"
+                               FontSize="12"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextBrush}"
+                               TextTrimming="CharacterEllipsis"/>
+                    <TextBlock x:Name="MetaText"
+                               Margin="0,4,0,0"
+                               FontSize="10"
+                               Foreground="{DynamicResource SubTextBrush}"
+                               TextTrimming="CharacterEllipsis"/>
+                    <WrapPanel x:Name="TagsPanel" Margin="0,6,0,0"/>
+                </StackPanel>
+                <TextBlock x:Name="ShowcaseHint"
+                           Grid.Column="1"
+                           Text="双击查看  ⛶"
+                           VerticalAlignment="Center"
+                           Margin="16,0,0,0"
+                           FontSize="11"
+                           Foreground="{DynamicResource SubTextBrush}"
+                           Visibility="Collapsed"/>
+            </Grid>
         </Grid>
     </Border>
 </UserControl>
