@@ -115,6 +115,7 @@ private enum AppIconImageProvider {
 struct ContentView: View {
     @StateObject private var library = PhotoLibrary()
     @AppStorage("workspace.sidebar.isVisible") private var isSidebarVisible = true
+    @AppStorage("workspace.sidebar.width") private var sidebarWidth = 260.0
     @State private var viewerItem: PhotoItem?
     @State private var alert: UserFacingAlert?
     @State private var showPhoneSyncConfirmation = false
@@ -130,23 +131,28 @@ struct ContentView: View {
     @State private var previousGalleryItemName: String?
     @State private var groupPhotosByTime = true
     @State private var expandedDirectoryPaths = Set<String>()
+    @State private var sidebarResizeStartWidth: Double?
+    @State private var isSidebarResizeHandleHovered = false
 
     private let galleryThumbnailSizeRange: ClosedRange<CGFloat> = 72...1_100
     private let galleryZoomStops: [CGFloat] = [72, 96, 126, 160, 220, 300, 420, 520, 720, 900, 1_100]
     private let workspaceCornerRadius: CGFloat = 14
+    private let sidebarWidthRange = 210.0...520.0
 
     var body: some View {
         ZStack {
             MotionWorkspaceBackground()
 
-            HStack(spacing: 10) {
+            HStack(spacing: 0) {
                 if isSidebarVisible {
                     workspacePanel(usesGlass: true) {
                         sidebar
                     }
-                    .frame(width: 238)
+                    .frame(width: clampedSidebarWidth(sidebarWidth))
                     .transition(.move(edge: .leading).combined(with: .opacity))
                     .accessibilityIdentifier("workspace.sidebar")
+
+                    sidebarResizeHandle
                 }
 
                 workspacePanel(usesGlass: false) {
@@ -211,6 +217,46 @@ struct ContentView: View {
             }
             expandedDirectoryPaths = [path]
         }
+    }
+
+    private var sidebarResizeHandle: some View {
+        ZStack {
+            Rectangle()
+                .fill(Color.clear)
+            Capsule()
+                .fill(
+                    isSidebarResizeHandleHovered
+                        ? Color.accentColor.opacity(0.55)
+                        : Color.primary.opacity(0.08)
+                )
+                .frame(width: isSidebarResizeHandleHovered ? 3 : 1, height: 54)
+        }
+        .frame(width: 10)
+        .frame(maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onHover { isSidebarResizeHandleHovered = $0 }
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    if sidebarResizeStartWidth == nil {
+                        sidebarResizeStartWidth = sidebarWidth
+                    }
+                    let startWidth = sidebarResizeStartWidth ?? sidebarWidth
+                    sidebarWidth = clampedSidebarWidth(
+                        startWidth + Double(value.translation.width)
+                    )
+                }
+                .onEnded { _ in
+                    sidebarResizeStartWidth = nil
+                }
+        )
+        .help("左右拖动调整侧边栏宽度")
+        .accessibilityLabel("调整侧边栏宽度")
+        .accessibilityIdentifier("workspace.sidebar.resize")
+    }
+
+    private func clampedSidebarWidth(_ width: Double) -> Double {
+        min(sidebarWidthRange.upperBound, max(sidebarWidthRange.lowerBound, width))
     }
 
     @ViewBuilder
@@ -436,7 +482,7 @@ struct ContentView: View {
         let isExpanded = expandedDirectoryPaths.contains(directory.id)
         let isSelected = library.browsingFolder?.standardizedFileURL.path == directory.id
         let directCount = library.directPhotoCount(in: directory)
-        let descendantCount = library.descendantPhotoCount(in: directory)
+        let totalCount = library.descendantPhotoCount(in: directory)
 
         return HStack(spacing: 3) {
             Button {
@@ -471,7 +517,7 @@ struct ContentView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 4)
-                    Text(directCount.formatted())
+                    Text(totalCount.formatted())
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -486,9 +532,9 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .frame(maxWidth: .infinity)
             .help(
-                descendantCount == directCount
-                    ? "\(directory.url.path)\n本层 \(directCount) 个媒体文件"
-                    : "\(directory.url.path)\n本层 \(directCount) 个，连同子目录 \(descendantCount) 个媒体文件"
+                totalCount == directCount
+                    ? "\(directory.url.path)\n共 \(totalCount) 个媒体文件"
+                    : "\(directory.url.path)\n共 \(totalCount) 个媒体文件，其中本层 \(directCount) 个"
             )
         }
         .padding(.leading, min(CGFloat(row.depth) * 12, 72))

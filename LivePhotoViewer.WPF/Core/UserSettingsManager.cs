@@ -9,6 +9,7 @@ namespace LivePhotoViewer.WPF.Core
         private sealed class SettingsData
         {
             public bool SidebarVisible { get; set; } = true;
+            public double SidebarWidth { get; set; } = 260;
         }
 
         private readonly string _filePath;
@@ -35,6 +36,18 @@ namespace LivePhotoViewer.WPF.Core
             {
                 if (_data.SidebarVisible == value) return;
                 _data.SidebarVisible = value;
+                try { File.WriteAllText(_filePath, JsonSerializer.Serialize(_data)); } catch { }
+            }
+        }
+
+        public double SidebarWidth
+        {
+            get => Math.Clamp(_data.SidebarWidth, 210, 520);
+            set
+            {
+                double width = Math.Clamp(value, 210, 520);
+                if (Math.Abs(_data.SidebarWidth - width) < 0.5) return;
+                _data.SidebarWidth = width;
                 try { File.WriteAllText(_filePath, JsonSerializer.Serialize(_data)); } catch { }
             }
         }

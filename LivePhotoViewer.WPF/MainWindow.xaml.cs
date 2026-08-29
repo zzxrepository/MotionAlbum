@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -51,6 +52,7 @@ namespace LivePhotoViewer.WPF
         private string? _previousFocusedPhotoId;
         private double _galleryCardSize = 126;
         private bool _isSidebarVisible = true;
+        private double _sidebarWidth = 260;
         private bool _suppressGalleryZoomEvent;
         private double _galleryManipulationBaseSize;
         private bool _groupByTime = true;
@@ -90,6 +92,7 @@ namespace LivePhotoViewer.WPF
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
             _isSidebarVisible = _settings.SidebarVisible;
+            _sidebarWidth = _settings.SidebarWidth;
             ApplySidebarVisibility();
             UpdateThemeButtonIcon();
             UpdateFilterVisuals();
@@ -126,6 +129,8 @@ namespace LivePhotoViewer.WPF
             _showcasePreviewCts?.Cancel();
             _quoteTimer.Stop();
             StopMediaPlayback();
+            if (_isSidebarVisible && SidebarColumn.ActualWidth >= 210)
+                _settings.SidebarWidth = SidebarColumn.ActualWidth;
             _mediaPlayer?.Dispose();
             _libVlc?.Dispose();
         }
@@ -403,6 +408,7 @@ namespace LivePhotoViewer.WPF
                     parent.Children.Add(node);
             }
             SortDirectoryNodes(nodes[rootPath]);
+            CalculateTotalPhotoCount(nodes[rootPath]);
 
             if (!nodes.ContainsKey(_browsingDirectory)) _browsingDirectory = rootPath;
             foreach (DirectoryNode node in nodes.Values)
@@ -421,6 +427,13 @@ namespace LivePhotoViewer.WPF
             node.Children.Sort((left, right) =>
                 StringComparer.CurrentCultureIgnoreCase.Compare(left.Name, right.Name));
             foreach (DirectoryNode child in node.Children) SortDirectoryNodes(child);
+        }
+
+        private static int CalculateTotalPhotoCount(DirectoryNode node)
+        {
+            node.TotalPhotoCount = node.PhotoCount
+                + node.Children.Sum(CalculateTotalPhotoCount);
+            return node.TotalPhotoCount;
         }
 
         private static string DirectoryName(string path)
@@ -1427,8 +1440,33 @@ namespace LivePhotoViewer.WPF
 
         private void ApplySidebarVisibility()
         {
-            SidebarColumn.Width = _isSidebarVisible ? new GridLength(246) : new GridLength(0);
-            SidebarPanel.Visibility = _isSidebarVisible ? Visibility.Visible : Visibility.Collapsed;
+            if (_isSidebarVisible)
+            {
+                SidebarColumn.MinWidth = 210;
+                SidebarColumn.MaxWidth = 520;
+                SidebarColumn.Width = new GridLength(Math.Clamp(_sidebarWidth, 210, 520));
+                SidebarPanel.Visibility = Visibility.Visible;
+                SidebarSplitter.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                if (SidebarColumn.ActualWidth >= 210)
+                {
+                    _sidebarWidth = SidebarColumn.ActualWidth;
+                    _settings.SidebarWidth = _sidebarWidth;
+                }
+                SidebarColumn.MinWidth = 0;
+                SidebarColumn.Width = new GridLength(0);
+                SidebarPanel.Visibility = Visibility.Collapsed;
+                SidebarSplitter.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        private void SidebarSplitter_DragCompleted(object sender, DragCompletedEventArgs e)
+        {
+            _sidebarWidth = Math.Clamp(SidebarColumn.ActualWidth, 210, 520);
+            SidebarColumn.Width = new GridLength(_sidebarWidth);
+            _settings.SidebarWidth = _sidebarWidth;
         }
 
         private async void BtnExport_Click(object sender, RoutedEventArgs e)

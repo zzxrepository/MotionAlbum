@@ -103,7 +103,7 @@
         <!-- 图库工作区 -->
         <Grid x:Name="GridMode" Grid.Row="1" Margin="8">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition x:Name="SidebarColumn" Width="246"/>
+                <ColumnDefinition x:Name="SidebarColumn" Width="260" MinWidth="210" MaxWidth="520"/>
                 <ColumnDefinition Width="8"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
@@ -153,7 +153,7 @@
                                               ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                                         <TreeView.ItemTemplate>
                                             <HierarchicalDataTemplate ItemsSource="{Binding Children}">
-                                                <TextBlock Text="{Binding DisplayText}" TextTrimming="CharacterEllipsis" ToolTip="{Binding FullPath}"/>
+                                                <TextBlock Text="{Binding DisplayText}" TextTrimming="CharacterEllipsis" ToolTip="{Binding ToolTipText}"/>
                                             </HierarchicalDataTemplate>
                                         </TreeView.ItemTemplate>
                                         <TreeView.ItemContainerStyle>
@@ -200,6 +200,19 @@
                     <TextBlock Grid.Row="3" Text="✦  神马都会亿点点的毛毛张" Margin="5,12,0,0" FontSize="10" Foreground="{DynamicResource DimTextBrush}"/>
                 </Grid>
             </Border>
+
+            <GridSplitter x:Name="SidebarSplitter"
+                          Grid.Column="1"
+                          Width="8"
+                          HorizontalAlignment="Stretch"
+                          VerticalAlignment="Stretch"
+                          Background="Transparent"
+                          Cursor="SizeWE"
+                          ResizeDirection="Columns"
+                          ResizeBehavior="PreviousAndNext"
+                          ShowsPreview="False"
+                          DragCompleted="SidebarSplitter_DragCompleted"
+                          ToolTip="左右拖动调整侧边栏宽度"/>
 
             <Border Grid.Column="2" Background="{DynamicResource CardBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="14">
                 <Grid Margin="10">
