@@ -103,7 +103,7 @@
         <!-- 图库工作区 -->
         <Grid x:Name="GridMode" Grid.Row="1" Margin="8">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition x:Name="SidebarColumn" Width="260" MinWidth="210" MaxWidth="520"/>
+                <ColumnDefinition x:Name="SidebarColumn" Width="238" MinWidth="210" MaxWidth="600"/>
                 <ColumnDefinition Width="8"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
@@ -212,7 +212,8 @@
                           ResizeBehavior="PreviousAndNext"
                           ShowsPreview="False"
                           DragCompleted="SidebarSplitter_DragCompleted"
-                          ToolTip="左右拖动调整侧边栏宽度"/>
+                          MouseDoubleClick="SidebarSplitter_MouseDoubleClick"
+                          ToolTip="沿整条边界左右拖动调整宽度；双击恢复默认宽度"/>
 
             <Border Grid.Column="2" Background="{DynamicResource CardBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="14">
                 <Grid Margin="10">

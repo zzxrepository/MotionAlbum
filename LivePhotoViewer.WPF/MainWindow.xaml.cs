@@ -52,7 +52,8 @@ namespace LivePhotoViewer.WPF
         private string? _previousFocusedPhotoId;
         private double _galleryCardSize = 126;
         private bool _isSidebarVisible = true;
-        private double _sidebarWidth = 260;
+        private const double DefaultSidebarWidth = 238;
+        private double _sidebarWidth = DefaultSidebarWidth;
         private bool _suppressGalleryZoomEvent;
         private double _galleryManipulationBaseSize;
         private bool _groupByTime = true;
@@ -1443,8 +1444,8 @@ namespace LivePhotoViewer.WPF
             if (_isSidebarVisible)
             {
                 SidebarColumn.MinWidth = 210;
-                SidebarColumn.MaxWidth = 520;
-                SidebarColumn.Width = new GridLength(Math.Clamp(_sidebarWidth, 210, 520));
+                SidebarColumn.MaxWidth = 600;
+                SidebarColumn.Width = new GridLength(Math.Clamp(_sidebarWidth, 210, 600));
                 SidebarPanel.Visibility = Visibility.Visible;
                 SidebarSplitter.Visibility = Visibility.Visible;
             }
@@ -1464,9 +1465,17 @@ namespace LivePhotoViewer.WPF
 
         private void SidebarSplitter_DragCompleted(object sender, DragCompletedEventArgs e)
         {
-            _sidebarWidth = Math.Clamp(SidebarColumn.ActualWidth, 210, 520);
+            _sidebarWidth = Math.Clamp(SidebarColumn.ActualWidth, 210, 600);
             SidebarColumn.Width = new GridLength(_sidebarWidth);
             _settings.SidebarWidth = _sidebarWidth;
+        }
+
+        private void SidebarSplitter_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        {
+            _sidebarWidth = DefaultSidebarWidth;
+            SidebarColumn.Width = new GridLength(_sidebarWidth);
+            _settings.SidebarWidth = _sidebarWidth;
+            e.Handled = true;
         }
 
         private async void BtnExport_Click(object sender, RoutedEventArgs e)

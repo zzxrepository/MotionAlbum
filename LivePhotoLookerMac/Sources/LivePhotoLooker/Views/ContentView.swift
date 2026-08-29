@@ -115,7 +115,7 @@ private enum AppIconImageProvider {
 struct ContentView: View {
     @StateObject private var library = PhotoLibrary()
     @AppStorage("workspace.sidebar.isVisible") private var isSidebarVisible = true
-    @AppStorage("workspace.sidebar.width") private var sidebarWidth = 260.0
+    @AppStorage("workspace.sidebar.preferredWidth.v2") private var sidebarWidth = 238.0
     @State private var viewerItem: PhotoItem?
     @State private var alert: UserFacingAlert?
     @State private var showPhoneSyncConfirmation = false
@@ -137,7 +137,8 @@ struct ContentView: View {
     private let galleryThumbnailSizeRange: ClosedRange<CGFloat> = 72...1_100
     private let galleryZoomStops: [CGFloat] = [72, 96, 126, 160, 220, 300, 420, 520, 720, 900, 1_100]
     private let workspaceCornerRadius: CGFloat = 14
-    private let sidebarWidthRange = 210.0...520.0
+    private let defaultSidebarWidth = 238.0
+    private let sidebarWidthRange = 210.0...600.0
 
     var body: some View {
         ZStack {
@@ -223,18 +224,24 @@ struct ContentView: View {
         ZStack {
             Rectangle()
                 .fill(Color.clear)
-            Capsule()
+            RoundedRectangle(cornerRadius: 1, style: .continuous)
                 .fill(
                     isSidebarResizeHandleHovered
                         ? Color.accentColor.opacity(0.55)
                         : Color.primary.opacity(0.08)
                 )
-                .frame(width: isSidebarResizeHandleHovered ? 3 : 1, height: 54)
+                .frame(width: isSidebarResizeHandleHovered ? 3 : 1)
+                .padding(.vertical, 12)
         }
         .frame(width: 10)
         .frame(maxHeight: .infinity)
         .contentShape(Rectangle())
         .onHover { isSidebarResizeHandleHovered = $0 }
+        .background(
+            isSidebarResizeHandleHovered
+                ? Color.accentColor.opacity(0.045)
+                : Color.clear
+        )
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { value in
@@ -250,7 +257,15 @@ struct ContentView: View {
                     sidebarResizeStartWidth = nil
                 }
         )
-        .help("左右拖动调整侧边栏宽度")
+        .simultaneousGesture(
+            TapGesture(count: 2)
+                .onEnded {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        sidebarWidth = defaultSidebarWidth
+                    }
+                }
+        )
+        .help("沿整条边界左右拖动调整宽度；双击恢复默认宽度")
         .accessibilityLabel("调整侧边栏宽度")
         .accessibilityIdentifier("workspace.sidebar.resize")
     }
