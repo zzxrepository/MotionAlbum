@@ -45,10 +45,14 @@ struct ViewerView: View {
     var body: some View {
         VStack(spacing: 0) {
             toolbar
-            Divider()
+                .padding(.horizontal, 10)
+                .padding(.top, 10)
+                .padding(.bottom, 8)
             mediaStage
-            Divider()
             footer
+                .padding(.horizontal, 10)
+                .padding(.top, 8)
+                .padding(.bottom, 10)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: item.cacheKey) {
@@ -363,7 +367,12 @@ struct ViewerView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
-        .background(.bar)
+        .motionGlassSurface(
+            cornerRadius: 14,
+            shadowOpacity: 0.07,
+            shadowRadius: 10,
+            shadowY: 4
+        )
     }
 
     private var metadataLine: some View {
@@ -506,7 +515,12 @@ struct ViewerView: View {
         }
         .padding(.horizontal, 12)
         .frame(height: 48)
-        .background(.ultraThinMaterial)
+        .motionGlassSurface(
+            cornerRadius: 14,
+            shadowOpacity: 0.08,
+            shadowRadius: 12,
+            shadowY: 4
+        )
     }
 
     private func toggleVideo() {

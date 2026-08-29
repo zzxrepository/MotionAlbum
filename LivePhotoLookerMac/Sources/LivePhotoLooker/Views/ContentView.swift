@@ -129,12 +129,11 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            Color(nsColor: .underPageBackgroundColor)
-                .ignoresSafeArea()
+            MotionWorkspaceBackground()
 
-            HStack(spacing: 8) {
+            HStack(spacing: 10) {
                 if isSidebarVisible {
-                    workspacePanel {
+                    workspacePanel(usesGlass: true) {
                         sidebar
                     }
                     .frame(width: 238)
@@ -142,15 +141,15 @@ struct ContentView: View {
                     .accessibilityIdentifier("workspace.sidebar")
                 }
 
-                workspacePanel {
+                workspacePanel(usesGlass: false) {
                     detail
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .accessibilityIdentifier("workspace.library")
             }
-            .padding(.horizontal, 8)
-            .padding(.top, 7)
-            .padding(.bottom, 8)
+            .padding(.horizontal, 10)
+            .padding(.top, 9)
+            .padding(.bottom, 10)
         }
         .frame(minWidth: 1080, minHeight: 700)
         .animation(.easeInOut(duration: 0.20), value: isSidebarVisible)
@@ -199,19 +198,35 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
     private func workspacePanel<Content: View>(
+        usesGlass: Bool,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        content()
+        let panel = content()
             .frame(maxHeight: .infinity)
-            .background(Color(nsColor: .windowBackgroundColor))
             .clipShape(
                 RoundedRectangle(cornerRadius: workspaceCornerRadius, style: .continuous)
             )
-            .overlay {
-                RoundedRectangle(cornerRadius: workspaceCornerRadius, style: .continuous)
-                    .stroke(Color.primary.opacity(0.10), lineWidth: 1)
-            }
+
+        if usesGlass {
+            panel.motionGlassSurface(
+                cornerRadius: workspaceCornerRadius,
+                shadowOpacity: 0.10,
+                shadowRadius: 18,
+                shadowY: 7
+            )
+        } else {
+            panel
+                .background(
+                    Color(nsColor: .windowBackgroundColor).opacity(0.16),
+                    in: RoundedRectangle(cornerRadius: workspaceCornerRadius, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: workspaceCornerRadius, style: .continuous)
+                        .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                }
+        }
     }
 
     private var sidebar: some View {
@@ -373,9 +388,7 @@ struct ContentView: View {
             authorSignature
         }
         .padding(10)
-        .background(
-            Color(nsColor: .windowBackgroundColor)
-        )
+        .background(Color.clear)
     }
 
     private var brandHeader: some View {
@@ -458,10 +471,13 @@ struct ContentView: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(
+            Color.primary.opacity(0.040),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
         .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.primary.opacity(0.09), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.white.opacity(0.22), lineWidth: 1)
         }
     }
 
@@ -479,12 +495,12 @@ struct ContentView: View {
         .padding(9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            Color(nsColor: .controlBackgroundColor).opacity(0.82),
-            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            Color.primary.opacity(0.032),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.white.opacity(0.16), lineWidth: 1)
         }
     }
 
@@ -559,7 +575,7 @@ struct ContentView: View {
     }
 
     private var libraryContent: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 12) {
             libraryHeader
             Group {
                 if library.filteredPhotos.isEmpty {
@@ -593,146 +609,173 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(
-                Color(nsColor: .controlBackgroundColor).opacity(0.72),
-                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+                Color(nsColor: .textBackgroundColor).opacity(0.52),
+                in: RoundedRectangle(cornerRadius: 15, style: .continuous)
             )
-            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .stroke(Color.white.opacity(0.22), lineWidth: 1)
             }
             statusFooter
         }
-        .padding(10)
+        .padding(12)
     }
 
     private var libraryHeader: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("照片库")
-                        .font(.system(size: 24, weight: .bold))
-                    Text(library.currentFolder?.path ?? "选择一个照片目录开始")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-
-                Spacer()
-
-                if library.isDetecting {
-                    HStack(spacing: 8) {
-                        ProgressView(
-                            value: Double(library.detectedCount),
-                            total: Double(max(1, library.photos.count))
-                        )
-                        .frame(width: 92)
-                        Text("\(library.detectedCount)/\(library.photos.count)")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(Color.accentColor.opacity(0.10), in: Capsule())
-                }
-
-                if library.isIndexingMetadata {
-                    HStack(spacing: 8) {
-                        ProgressView(
-                            value: Double(library.indexedMetadataCount),
-                            total: Double(max(1, library.metadataIndexTotal))
-                        )
-                        .frame(width: 92)
-                        Text("元信息 \(library.indexedMetadataCount)/\(library.metadataIndexTotal)")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(Color.orange.opacity(0.10), in: Capsule())
-                }
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 10) {
+                libraryTitleArea
+                Spacer(minLength: 12)
+                libraryMetricBadges
+                libraryBrowsePrimaryControls
+                libraryBrowseNavigationControls
             }
 
-            libraryHeaderControls
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .center, spacing: 12) {
+                    libraryTitleArea
+                    Spacer(minLength: 12)
+                    libraryMetricBadges
+                }
+                libraryBalancedBrowseControls
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                libraryTitleArea
+                libraryMetricBadges
+                libraryBalancedBrowseControls
+            }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 13)
-        .background(
-            Color(nsColor: .controlBackgroundColor).opacity(0.90),
-            in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+        .padding(.horizontal, 17)
+        .padding(.vertical, 14)
+        .motionGlassSurface(
+            cornerRadius: 16,
+            shadowOpacity: 0.075,
+            shadowRadius: 13,
+            shadowY: 5
         )
-        .overlay {
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-        }
     }
 
-    private var libraryHeaderControls: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                libraryMetricBadges
-                Spacer(minLength: 0)
+    private var libraryTitleArea: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("照片库")
+                    .font(.system(size: 24, weight: .bold))
+                Text(library.currentFolder?.path ?? "选择一个照片目录开始")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(width: 300, alignment: .leading)
+
+            if library.isDetecting {
+                HStack(spacing: 8) {
+                    ProgressView(
+                        value: Double(library.detectedCount),
+                        total: Double(max(1, library.photos.count))
+                    )
+                    .frame(width: 72)
+                    Text("\(library.detectedCount)/\(library.photos.count)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .background(Color.accentColor.opacity(0.10), in: Capsule())
             }
 
-            HStack(spacing: 8) {
-                Spacer(minLength: 0)
-                libraryBrowseControls
+            if library.isIndexingMetadata {
+                HStack(spacing: 8) {
+                    ProgressView(
+                        value: Double(library.indexedMetadataCount),
+                        total: Double(max(1, library.metadataIndexTotal))
+                    )
+                    .frame(width: 72)
+                    Text("元信息 \(library.indexedMetadataCount)/\(library.metadataIndexTotal)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .background(Color.orange.opacity(0.10), in: Capsule())
             }
         }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var libraryMetricBadges: some View {
-        HStack(spacing: 8) {
-            metricBadge("全部", value: library.photos.count, systemImage: "photo.stack")
-            metricBadge("实况", value: library.liveCount, systemImage: "livephoto")
-            if library.videoCount > 0 {
-                metricBadge("视频", value: library.videoCount, systemImage: "play.rectangle")
+        MotionGlassContainer(spacing: 6) {
+            HStack(spacing: 6) {
+                metricBadge("全部", value: library.photos.count, systemImage: "photo.stack")
+                metricBadge("实况", value: library.liveCount, systemImage: "livephoto")
+                if library.videoCount > 0 {
+                    metricBadge("视频", value: library.videoCount, systemImage: "play.rectangle")
+                }
+                metricBadge("喜欢", value: library.selectedCount, systemImage: "heart.fill")
+                metricBadge("标签", value: library.taggedCount, systemImage: "tag")
+                if let selectedTag = library.selectedTag {
+                    TagBadgeView(tag: selectedTag, count: library.count(forTag: selectedTag), isActive: true)
+                }
             }
-            metricBadge("喜欢", value: library.selectedCount, systemImage: "heart.fill")
-            metricBadge("标签", value: library.taggedCount, systemImage: "tag")
-            if let selectedTag = library.selectedTag {
-                TagBadgeView(tag: selectedTag, count: library.count(forTag: selectedTag), isActive: true)
-            }
+            .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
+    private var libraryBalancedBrowseControls: some View {
+        HStack(spacing: 10) {
+            libraryBrowsePrimaryControls
+            Spacer(minLength: 12)
+            libraryBrowseNavigationControls
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var libraryBrowsePrimaryControls: some View {
+        HStack(spacing: 6) {
+            sortMenu
+            thumbnailSizeControl
         }
         .fixedSize(horizontal: true, vertical: false)
     }
 
-    private var libraryBrowseControls: some View {
-        HStack(spacing: 8) {
-            sortMenu
-            thumbnailSizeControl
-            if previousGalleryItemID != nil {
+    private var libraryBrowseNavigationControls: some View {
+        MotionGlassContainer(spacing: 6) {
+            HStack(spacing: 6) {
+                if previousGalleryItemID != nil {
+                    Button {
+                        returnToPreviousGalleryItem()
+                    } label: {
+                        Label("上次", systemImage: "arrow.uturn.backward")
+                    }
+                    .buttonStyle(.bordered)
+                    .help(previousGalleryItemName.map { "返回上次查看的照片：\($0)" } ?? "返回上次查看的照片")
+                }
+                if focusedGalleryItemID != nil {
+                    Button {
+                        returnToFocusedGalleryItem()
+                    } label: {
+                        Label("当前", systemImage: "scope")
+                    }
+                    .buttonStyle(.bordered)
+                    .help(
+                        focusedGalleryItemName.map {
+                            "当前照片是最近单击或打开的照片；定位到：\($0)"
+                        } ?? "定位到最近单击或打开的照片"
+                    )
+                }
                 Button {
-                    returnToPreviousGalleryItem()
+                    galleryScrollToTopToken &+= 1
                 } label: {
-                    Label("返回上次查看", systemImage: "arrow.uturn.backward")
+                    Label("顶部", systemImage: "arrow.up.to.line")
                 }
                 .buttonStyle(.bordered)
-                .help(previousGalleryItemName.map { "返回上次查看的照片：\($0)" } ?? "返回上次查看的照片")
+                .help("回到照片库顶部")
             }
-            if focusedGalleryItemID != nil {
-                Button {
-                    returnToFocusedGalleryItem()
-                } label: {
-                    Label("定位当前照片", systemImage: "scope")
-                }
-                .buttonStyle(.bordered)
-                .help(
-                    focusedGalleryItemName.map {
-                        "当前照片是最近单击或打开的照片；定位到：\($0)"
-                    } ?? "定位到最近单击或打开的照片"
-                )
-            }
-            Button {
-                galleryScrollToTopToken &+= 1
-            } label: {
-                Label("回到顶部", systemImage: "arrow.up.to.line")
-            }
-            .buttonStyle(.bordered)
-            .help("回到照片库顶部")
+            .controlSize(.regular)
+            .fixedSize(horizontal: true, vertical: false)
         }
-        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var statusFooter: some View {
@@ -749,14 +792,12 @@ struct ContentView: View {
         .foregroundStyle(.secondary)
         .padding(.horizontal, 12)
         .frame(height: 27)
-        .background(
-            Color(nsColor: .controlBackgroundColor).opacity(0.82),
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        .motionGlassSurface(
+            cornerRadius: 10,
+            shadowOpacity: 0.045,
+            shadowRadius: 7,
+            shadowY: 2
         )
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.primary.opacity(0.07), lineWidth: 1)
-        }
     }
 
     private var statusFooterMessage: String {
@@ -770,14 +811,7 @@ struct ContentView: View {
     }
 
     private var pageBackground: some View {
-        LinearGradient(
-            colors: [
-                Color(nsColor: .underPageBackgroundColor).opacity(0.78),
-                Color(nsColor: .windowBackgroundColor)
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
+        Color.clear
     }
 
     private func emptyState<Actions: View>(
@@ -817,15 +851,15 @@ struct ContentView: View {
         }
         .font(.system(size: 12, weight: .medium))
         .fixedSize(horizontal: true, vertical: false)
-        .padding(.horizontal, 9)
+        .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background(
-            Color(nsColor: .controlBackgroundColor),
-            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+            Color.primary.opacity(0.045),
+            in: Capsule()
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+            Capsule()
+                .stroke(Color.white.opacity(0.20), lineWidth: 0.8)
         }
     }
 
@@ -855,12 +889,12 @@ struct ContentView: View {
         .padding(.horizontal, 9)
         .padding(.vertical, 5)
         .background(
-            Color(nsColor: .controlBackgroundColor),
-            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+            Color.primary.opacity(0.040),
+            in: Capsule()
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+            Capsule()
+                .stroke(Color.white.opacity(0.20), lineWidth: 0.8)
         }
         .help("调整照片墙大小；最大档进入单图画廊，触控板也可以捏合缩放")
     }
@@ -939,6 +973,13 @@ struct ContentView: View {
             Toggle("按时间分组（小图按月，大图按日）", isOn: $groupPhotosByTime)
         } label: {
             Label(library.sortOrder.shortTitle, systemImage: "arrow.up.arrow.down")
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(Color.primary.opacity(0.040), in: Capsule())
+                .overlay {
+                    Capsule()
+                        .stroke(Color.white.opacity(0.20), lineWidth: 0.8)
+                }
         }
         .menuStyle(.borderlessButton)
         .help("选择照片库排序方式")
