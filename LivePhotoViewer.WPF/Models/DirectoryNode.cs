@@ -10,6 +10,7 @@ namespace LivePhotoViewer.WPF.Models
         public string Name { get; set; } = string.Empty;
         public string FullPath { get; set; } = string.Empty;
         public bool IsSelected { get; set; }
+        public bool IsExpanded { get; set; }
         public int PhotoCount { get; set; }
         public List<DirectoryNode> Children { get; set; } = new();
 

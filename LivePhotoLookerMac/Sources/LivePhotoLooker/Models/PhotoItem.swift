@@ -43,6 +43,14 @@ enum MediaKind: String, Codable, Sendable {
     case video
 }
 
+struct PhotoDirectory: Identifiable, Hashable {
+    let url: URL
+    let parentPath: String?
+
+    var id: String { url.standardizedFileURL.path }
+    var name: String { url.lastPathComponent }
+}
+
 @MainActor
 final class PhotoItem: ObservableObject, Identifiable {
     let id: String

@@ -43,6 +43,7 @@ namespace LivePhotoViewer.WPF
         private CancellationTokenSource? _loadCts;
         private CancellationTokenSource? _showcasePreviewCts;
         private string _currentDirectory = string.Empty;
+        private string _browsingDirectory = string.Empty;
         private LibraryFilter _filter = LibraryFilter.All;
         private string? _selectedTag;
         private string _tagSidebarSignature = string.Empty;
@@ -54,6 +55,7 @@ namespace LivePhotoViewer.WPF
         private double _galleryManipulationBaseSize;
         private bool _groupByTime = true;
         private bool _isWorking;
+        private bool _suppressDirectorySelection;
         private int _quoteIndex;
 
         private int _viewerIndex = -1;
@@ -150,7 +152,25 @@ namespace LivePhotoViewer.WPF
 
         private void IncludeSubfoldersCheckBox_Click(object sender, RoutedEventArgs e)
         {
-            if (Directory.Exists(_currentDirectory)) _ = OpenDirectoryAsync(_currentDirectory, remember: false);
+            if (!Directory.Exists(_currentDirectory)) return;
+            _focusedPhotoId = null;
+            _previousFocusedPhotoId = null;
+            _selectedTag = null;
+            LibraryPathText.Text = _browsingDirectory;
+            RenderGallery();
+            SetStatus(CurrentScopeSummary());
+        }
+
+        private void DirectoryTreeView_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
+        {
+            if (_suppressDirectorySelection || e.NewValue is not DirectoryNode node || !Directory.Exists(node.FullPath)) return;
+            _browsingDirectory = Path.GetFullPath(node.FullPath);
+            _focusedPhotoId = null;
+            _previousFocusedPhotoId = null;
+            _selectedTag = null;
+            LibraryPathText.Text = _browsingDirectory;
+            RenderGallery();
+            SetStatus(CurrentScopeSummary());
         }
 
         private void BtnRecentFolders_Click(object sender, RoutedEventArgs e)
@@ -193,7 +213,8 @@ namespace LivePhotoViewer.WPF
                 ViewerMode.Visibility = Visibility.Collapsed;
                 GridMode.Visibility = Visibility.Visible;
             }
-            _currentDirectory = Path.GetFullPath(path);
+            _currentDirectory = NormalizeDirectoryPath(path);
+            _browsingDirectory = _currentDirectory;
             if (remember) _recentFolders.Add(_currentDirectory);
             _focusedPhotoId = null;
             _previousFocusedPhotoId = null;
@@ -208,7 +229,7 @@ namespace LivePhotoViewer.WPF
 
             try
             {
-                bool recursively = IncludeSubfoldersCheckBox.IsChecked == true;
+                const bool recursively = true;
                 var files = await Task.Run(() => EnumerateMediaFiles(_currentDirectory, recursively, token), token);
                 token.ThrowIfCancellationRequested();
                 var imagePaths = files.Where(LivePhotoExtractor.IsSupportedImage).ToList();
@@ -247,12 +268,14 @@ namespace LivePhotoViewer.WPF
                     }
                 }
 
+                BuildDirectoryTree();
+
                 RenderGallery();
                 SetStatus($"已发现 {_photos.Count} 个媒体文件，正在识别实况并生成缩略图…");
                 await LoadThumbnailsAndDetectLiveAsync(token, recursively);
                 token.ThrowIfCancellationRequested();
                 RenderGallery();
-                SetStatus($"已加载 {_photos.Count} 个媒体文件");
+                SetStatus(CurrentScopeSummary());
             }
             catch (OperationCanceledException) { }
             catch (Exception ex)
@@ -314,6 +337,114 @@ namespace LivePhotoViewer.WPF
                 catch { }
             }
             return result;
+        }
+
+        private IEnumerable<PhotoItem> ScopedPhotos()
+        {
+            if (string.IsNullOrWhiteSpace(_browsingDirectory)) return _photos;
+            bool includeDescendants = IncludeSubfoldersCheckBox.IsChecked == true;
+            return _photos.Where(photo => includeDescendants
+                ? IsSameOrDescendant(photo.Directory, _browsingDirectory)
+                : string.Equals(
+                    NormalizeDirectoryPath(photo.Directory),
+                    NormalizeDirectoryPath(_browsingDirectory),
+                    StringComparison.OrdinalIgnoreCase));
+        }
+
+        private void BuildDirectoryTree()
+        {
+            if (!Directory.Exists(_currentDirectory))
+            {
+                DirectoryTreeView.ItemsSource = null;
+                return;
+            }
+
+            string rootPath = NormalizeDirectoryPath(_currentDirectory);
+            var nodes = new Dictionary<string, DirectoryNode>(StringComparer.OrdinalIgnoreCase)
+            {
+                [rootPath] = new DirectoryNode
+                {
+                    Name = DirectoryName(rootPath),
+                    FullPath = rootPath
+                }
+            };
+
+            foreach (PhotoItem photo in _photos)
+            {
+                string directory = NormalizeDirectoryPath(photo.Directory);
+                if (!IsSameOrDescendant(directory, rootPath)) continue;
+
+                if (!nodes.TryGetValue(directory, out DirectoryNode? directNode))
+                {
+                    directNode = new DirectoryNode { Name = DirectoryName(directory), FullPath = directory };
+                    nodes[directory] = directNode;
+                }
+                directNode.PhotoCount++;
+
+                string cursor = directory;
+                while (!string.Equals(cursor, rootPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    DirectoryInfo? parent = Directory.GetParent(cursor);
+                    if (parent == null || !IsSameOrDescendant(parent.FullName, rootPath)) break;
+                    cursor = NormalizeDirectoryPath(parent.FullName);
+                    if (!nodes.ContainsKey(cursor))
+                    {
+                        nodes[cursor] = new DirectoryNode { Name = DirectoryName(cursor), FullPath = cursor };
+                    }
+                }
+            }
+
+            foreach (DirectoryNode node in nodes.Values.Where(node =>
+                         !string.Equals(node.FullPath, rootPath, StringComparison.OrdinalIgnoreCase)))
+            {
+                string? parentPath = Directory.GetParent(node.FullPath)?.FullName;
+                if (parentPath != null) parentPath = NormalizeDirectoryPath(parentPath);
+                if (parentPath != null && nodes.TryGetValue(parentPath, out DirectoryNode? parent))
+                    parent.Children.Add(node);
+            }
+            SortDirectoryNodes(nodes[rootPath]);
+
+            if (!nodes.ContainsKey(_browsingDirectory)) _browsingDirectory = rootPath;
+            foreach (DirectoryNode node in nodes.Values)
+            {
+                node.IsSelected = string.Equals(node.FullPath, _browsingDirectory, StringComparison.OrdinalIgnoreCase);
+                node.IsExpanded = string.Equals(node.FullPath, rootPath, StringComparison.OrdinalIgnoreCase)
+                    || IsSameOrDescendant(_browsingDirectory, node.FullPath);
+            }
+            _suppressDirectorySelection = true;
+            DirectoryTreeView.ItemsSource = new[] { nodes[rootPath] };
+            _suppressDirectorySelection = false;
+        }
+
+        private static void SortDirectoryNodes(DirectoryNode node)
+        {
+            node.Children.Sort((left, right) =>
+                StringComparer.CurrentCultureIgnoreCase.Compare(left.Name, right.Name));
+            foreach (DirectoryNode child in node.Children) SortDirectoryNodes(child);
+        }
+
+        private static string DirectoryName(string path)
+        {
+            string name = Path.GetFileName(NormalizeDirectoryPath(path));
+            return string.IsNullOrWhiteSpace(name) ? path : name;
+        }
+
+        private static string NormalizeDirectoryPath(string path) =>
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+
+        private static bool IsSameOrDescendant(string path, string ancestor)
+        {
+            string relative = Path.GetRelativePath(Path.GetFullPath(ancestor), Path.GetFullPath(path));
+            if (relative == ".") return true;
+            if (Path.IsPathRooted(relative) || relative == "..") return false;
+            return !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                && !relative.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal);
+        }
+
+        private string CurrentScopeSummary()
+        {
+            List<PhotoItem> scope = ScopedPhotos().ToList();
+            return $"当前目录 {scope.Count:N0} 个 · 实况 {scope.Count(photo => photo.IsLivePhoto):N0} 个 · 视频 {scope.Count(photo => photo.IsVideo):N0} 个 · 喜欢 {scope.Count(photo => photo.IsFavorite):N0} 个";
         }
 
         private async Task LoadThumbnailsAndDetectLiveAsync(CancellationToken token, bool recursively)
@@ -545,7 +676,7 @@ namespace LivePhotoViewer.WPF
 
         private IEnumerable<PhotoItem> ApplyFilterAndSort()
         {
-            IEnumerable<PhotoItem> query = _photos;
+            IEnumerable<PhotoItem> query = ScopedPhotos();
             query = _filter switch
             {
                 LibraryFilter.Live => query.Where(photo => photo.IsLivePhoto),
@@ -1227,7 +1358,7 @@ namespace LivePhotoViewer.WPF
 
         private void UpdateTagSidebar()
         {
-            var tags = _photos.SelectMany(photo => photo.Tags)
+            var tags = ScopedPhotos().SelectMany(photo => photo.Tags)
                 .GroupBy(tag => tag, StringComparer.CurrentCultureIgnoreCase)
                 .Select(group => (Name: group.Key, Count: group.Count()))
                 .OrderBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
@@ -1330,7 +1461,7 @@ namespace LivePhotoViewer.WPF
 
         private async void BtnTrashFavorites_Click(object sender, RoutedEventArgs e)
         {
-            var favorites = _photos.Where(photo => photo.IsFavorite).ToList();
+            var favorites = ScopedPhotos().Where(photo => photo.IsFavorite).ToList();
             if (favorites.Count == 0) { SetStatus("“我喜欢”中没有照片"); return; }
             await ConfirmAndTrashAsync(favorites);
         }
@@ -1369,6 +1500,7 @@ namespace LivePhotoViewer.WPF
                     _thumbnailMap.Remove(photo.StableId);
                     _photos.Remove(photo);
                 }
+                BuildDirectoryTree();
                 RenderGallery();
                 if (ViewerMode.Visibility == Visibility.Visible)
                 {
@@ -1387,7 +1519,7 @@ namespace LivePhotoViewer.WPF
         private async void BtnSyncAndroid_Click(object sender, RoutedEventArgs e)
         {
             if (_isWorking) return;
-            var paths = _photos.Where(photo => photo.IsFavorite)
+            var paths = ScopedPhotos().Where(photo => photo.IsFavorite)
                 .SelectMany(photo => photo.OriginalResourcePaths)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Where(File.Exists)
@@ -1634,11 +1766,12 @@ namespace LivePhotoViewer.WPF
 
         private void UpdateCounts()
         {
-            int all = _photos.Count;
-            int live = _photos.Count(photo => photo.IsLivePhoto);
-            int video = _photos.Count(photo => photo.IsVideo);
-            int favorite = _photos.Count(photo => photo.IsFavorite);
-            int tagged = _photos.Count(photo => photo.Tags.Count > 0);
+            List<PhotoItem> scopedPhotos = ScopedPhotos().ToList();
+            int all = scopedPhotos.Count;
+            int live = scopedPhotos.Count(photo => photo.IsLivePhoto);
+            int video = scopedPhotos.Count(photo => photo.IsVideo);
+            int favorite = scopedPhotos.Count(photo => photo.IsFavorite);
+            int tagged = scopedPhotos.Count(photo => photo.Tags.Count > 0);
             AllCountText.Text = all.ToString("N0");
             LiveCountText.Text = live.ToString("N0");
             VideoCountText.Text = video.ToString("N0");

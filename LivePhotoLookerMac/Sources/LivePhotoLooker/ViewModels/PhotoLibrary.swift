@@ -9,13 +9,17 @@ private struct VisibleCacheSignature: Equatable {
     let searchText: String
     let selectedTag: String?
     let sortOrder: PhotoSortOrder
-    let folderPath: String?
+    let rootFolderPath: String?
+    let browsingFolderPath: String?
+    let includeSubfolders: Bool
 }
 
 @MainActor
 final class PhotoLibrary: ObservableObject {
     @Published private(set) var photos: [PhotoItem] = []
     @Published private(set) var currentFolder: URL?
+    @Published private(set) var browsingFolder: URL?
+    @Published private(set) var directories: [PhotoDirectory] = []
     @Published var filter: PhotoFilter = .all
     @Published var searchText = "" {
         didSet {
@@ -28,7 +32,18 @@ final class PhotoLibrary: ObservableObject {
         }
     }
     @Published var selectedTag: String?
-    @Published var includeSubfolders = true
+    @Published var includeSubfolders = false {
+        didSet {
+            guard includeSubfolders != oldValue else { return }
+            placeSearchTask?.cancel()
+            isResolvingSearchPlaces = false
+            normalizeSelectedTagForCurrentScope()
+            invalidateVisibleCache()
+            revision &+= 1
+            statusMessage = summaryText
+            schedulePlaceResolutionForSearch()
+        }
+    }
     @Published private(set) var isLoading = false
     @Published private(set) var isDetecting = false
     @Published private(set) var isIndexingMetadata = false
@@ -66,6 +81,9 @@ final class PhotoLibrary: ObservableObject {
     private var visibleCacheSignature: VisibleCacheSignature?
     private var visibleCache: [PhotoItem] = []
     private var photoIDSet = Set<String>()
+    private var directoryChildrenByPath: [String: [PhotoDirectory]] = [:]
+    private var directPhotoCountsByPath: [String: Int] = [:]
+    private var descendantPhotoCountsByPath: [String: Int] = [:]
 
     init() {
         refreshRecentFolders()
@@ -80,7 +98,9 @@ final class PhotoLibrary: ObservableObject {
             searchText: searchText,
             selectedTag: selectedTag,
             sortOrder: sortOrder,
-            folderPath: currentFolder?.path
+            rootFolderPath: currentFolder?.path,
+            browsingFolderPath: browsingFolder?.path,
+            includeSubfolders: includeSubfolders
         )
         if visibleCacheSignature == signature {
             return visibleCache
@@ -88,6 +108,7 @@ final class PhotoLibrary: ObservableObject {
 
         let terms = Self.searchTerms(from: searchText)
         let filtered = photos.filter { item in
+            guard isItemInCurrentScope(item) else { return false }
             if terms.isEmpty == false,
                Self.matchesSearchTerms(terms, item: item, root: currentFolder) == false {
                 return false
@@ -112,14 +133,16 @@ final class PhotoLibrary: ObservableObject {
         return sorted
     }
 
-    var liveCount: Int { photos.lazy.filter { $0.liveStatus == .live }.count }
-    var videoCount: Int { photos.lazy.filter { $0.mediaKind == .video }.count }
-    var selectedCount: Int { photos.lazy.filter(\.isSelected).count }
-    var selectedPhotos: [PhotoItem] { photos.filter(\.isSelected) }
+    var browsingPhotos: [PhotoItem] { photos.filter(isItemInCurrentScope) }
+    var photoCount: Int { browsingPhotos.count }
+    var liveCount: Int { browsingPhotos.lazy.filter { $0.liveStatus == .live }.count }
+    var videoCount: Int { browsingPhotos.lazy.filter { $0.mediaKind == .video }.count }
+    var selectedCount: Int { browsingPhotos.lazy.filter(\.isSelected).count }
+    var selectedPhotos: [PhotoItem] { browsingPhotos.filter(\.isSelected) }
     var unknownCount: Int { photos.lazy.filter { $0.liveStatus == .unknown }.count }
-    var taggedCount: Int { photos.lazy.filter { $0.tags.isEmpty == false }.count }
+    var taggedCount: Int { browsingPhotos.lazy.filter { $0.tags.isEmpty == false }.count }
     var allTags: [String] {
-        Array(Set(photos.flatMap(\.tags))).sorted {
+        Array(Set(browsingPhotos.flatMap(\.tags))).sorted {
             $0.localizedStandardCompare($1) == .orderedAscending
         }
     }
@@ -211,6 +234,11 @@ final class PhotoLibrary: ObservableObject {
         }
 
         currentFolder = folder
+        browsingFolder = folder
+        directories = [PhotoDirectory(url: folder, parentPath: nil)]
+        directoryChildrenByPath = [:]
+        directPhotoCountsByPath = [:]
+        descendantPhotoCountsByPath = [:]
         photos = []
         photoIDSet = []
         selectedTag = nil
@@ -224,7 +252,7 @@ final class PhotoLibrary: ObservableObject {
         isIndexingMetadata = false
         isLoading = true
         statusMessage = "正在扫描 \(folder.lastPathComponent)…"
-        let recursive = includeSubfolders
+        let recursive = true
 
         scanTask = Task { [weak self] in
             var didShowCachedIndex = false
@@ -332,6 +360,7 @@ final class PhotoLibrary: ObservableObject {
             item.holdFrameTime = holdFrameMap[selectionKey]
             return item
         }
+        rebuildDirectoryIndex(root: folder)
         photoIDSet = Set(photos.map(\.id))
         revision &+= 1
         isLoading = false
@@ -371,9 +400,7 @@ final class PhotoLibrary: ObservableObject {
         guard let currentFolder else { return }
         item.tags = item.tags.filter { $0 != tag }
         tagStore.setTags(item.tags, fileName: item.selectionKey, folder: currentFolder)
-        if selectedTag == tag, photos.contains(where: { $0.tags.contains(tag) }) == false {
-            selectedTag = nil
-        }
+        normalizeSelectedTagForCurrentScope()
         revision &+= 1
         statusMessage = "已移除标签：\(tag)"
     }
@@ -402,7 +429,40 @@ final class PhotoLibrary: ObservableObject {
     }
 
     func count(forTag tag: String) -> Int {
-        photos.lazy.filter { $0.tags.contains(tag) }.count
+        browsingPhotos.lazy.filter { $0.tags.contains(tag) }.count
+    }
+
+    func selectBrowsingFolder(_ folder: URL) {
+        guard let currentFolder else { return }
+        let folder = folder.standardizedFileURL
+        guard Self.isPath(folder.path, equalToOrDescendantOf: currentFolder.path),
+              directories.contains(where: { $0.id == folder.path }) else { return }
+        guard browsingFolder?.standardizedFileURL.path != folder.path else { return }
+
+        placeSearchTask?.cancel()
+        isResolvingSearchPlaces = false
+        browsingFolder = folder
+        normalizeSelectedTagForCurrentScope()
+        invalidateVisibleCache()
+        revision &+= 1
+        statusMessage = summaryText
+        schedulePlaceResolutionForSearch()
+    }
+
+    func childDirectories(of directory: PhotoDirectory) -> [PhotoDirectory] {
+        directoryChildrenByPath[directory.id] ?? []
+    }
+
+    func hasChildDirectories(_ directory: PhotoDirectory) -> Bool {
+        directoryChildrenByPath[directory.id]?.isEmpty == false
+    }
+
+    func directPhotoCount(in directory: PhotoDirectory) -> Int {
+        directPhotoCountsByPath[directory.id] ?? 0
+    }
+
+    func descendantPhotoCount(in directory: PhotoDirectory) -> Int {
+        descendantPhotoCountsByPath[directory.id] ?? 0
     }
 
     func setStatus(_ message: String) {
@@ -440,11 +500,11 @@ final class PhotoLibrary: ObservableObject {
 
             let terms = Self.searchTerms(from: query)
             guard terms.isEmpty == false,
-                  self.photos.contains(where: {
+                  self.browsingPhotos.contains(where: {
                       Self.matchesSearchTerms(terms, item: $0, root: self.currentFolder, includePlace: false)
                   }) == false else { return }
 
-            let candidates = self.photos.filter { item in
+            let candidates = self.browsingPhotos.filter { item in
                 item.mediaKind == .image
                     && item.placeName == nil
                     && item.isResolvingPlaceName == false
@@ -492,17 +552,16 @@ final class PhotoLibrary: ObservableObject {
         photoIDSet.subtract(itemIDs)
         visibleCacheSignature = nil
         visibleCache = []
+        rebuildDirectoryIndex(root: currentFolder)
 
         selectionStore.remove(fileNames: selectionKeys, in: currentFolder)
         tagStore.remove(fileNames: selectionKeys, in: currentFolder)
         holdFrameStore.remove(fileNames: selectionKeys, in: currentFolder)
-        Task { [libraryIndexStore, currentFolder, recursive = includeSubfolders] in
-            await libraryIndexStore.removeFolderIndex(folder: currentFolder, recursively: recursive)
+        Task { [libraryIndexStore, currentFolder] in
+            await libraryIndexStore.removeFolderIndex(folder: currentFolder, recursively: true)
         }
 
-        if let selectedTag, photos.contains(where: { $0.tags.contains(selectedTag) }) == false {
-            self.selectedTag = nil
-        }
+        normalizeSelectedTagForCurrentScope()
 
         detectedCount = photos.lazy.filter { $0.liveStatus != .unknown }.count
         if photos.contains(where: { $0.liveStatus == .unknown }) == false {
@@ -521,7 +580,7 @@ final class PhotoLibrary: ObservableObject {
 
     private func startLiveDetection(generation currentGeneration: UUID) {
         guard let folder = currentFolder else { return }
-        let recursive = includeSubfolders
+        let recursive = true
         let unknownItems = photos.filter { $0.mediaKind == .image && $0.liveStatus == .unknown }
         guard !unknownItems.isEmpty else {
             isDetecting = false
@@ -584,7 +643,7 @@ final class PhotoLibrary: ObservableObject {
 
     private func startMetadataIndexing(generation currentGeneration: UUID) {
         guard let folder = currentFolder else { return }
-        let recursive = includeSubfolders
+        let recursive = true
         let imageItems = photos.filter { $0.mediaKind == .image && $0.metadata.isEmpty }
         guard imageItems.isEmpty == false else {
             isIndexingMetadata = false
@@ -639,9 +698,95 @@ final class PhotoLibrary: ObservableObject {
 
     private var summaryText: String {
         if videoCount > 0 {
-            return "共 \(photos.count) 个 · 实况 \(liveCount) 张 · 视频 \(videoCount) 个 · 喜欢 \(selectedCount) 个 · 已打标签 \(taggedCount) 个"
+            return "共 \(photoCount) 个 · 实况 \(liveCount) 张 · 视频 \(videoCount) 个 · 喜欢 \(selectedCount) 个 · 已打标签 \(taggedCount) 个"
         }
-        return "共 \(photos.count) 张 · 实况 \(liveCount) 张 · 喜欢 \(selectedCount) 张 · 已打标签 \(taggedCount) 张"
+        return "共 \(photoCount) 张 · 实况 \(liveCount) 张 · 喜欢 \(selectedCount) 张 · 已打标签 \(taggedCount) 张"
+    }
+
+    private func invalidateVisibleCache() {
+        visibleCacheSignature = nil
+        visibleCache = []
+    }
+
+    private func isItemInCurrentScope(_ item: PhotoItem) -> Bool {
+        guard let browsingFolder else { return true }
+        let parentPath = item.url.deletingLastPathComponent().standardizedFileURL.path
+        if includeSubfolders {
+            return Self.isPath(parentPath, equalToOrDescendantOf: browsingFolder.path)
+        }
+        return parentPath == browsingFolder.standardizedFileURL.path
+    }
+
+    private func normalizeSelectedTagForCurrentScope() {
+        guard let selectedTag else { return }
+        if browsingPhotos.contains(where: { $0.tags.contains(selectedTag) }) == false {
+            self.selectedTag = nil
+        }
+    }
+
+    private func rebuildDirectoryIndex(root: URL) {
+        let root = root.standardizedFileURL
+        let rootPath = root.path
+        var directoriesByPath: [String: PhotoDirectory] = [
+            rootPath: PhotoDirectory(url: root, parentPath: nil)
+        ]
+        var directCounts: [String: Int] = [:]
+        var descendantCounts: [String: Int] = [:]
+
+        for item in photos {
+            var directory = item.url.deletingLastPathComponent().standardizedFileURL
+            guard Self.isPath(directory.path, equalToOrDescendantOf: rootPath) else { continue }
+            directCounts[directory.path, default: 0] += 1
+
+            while Self.isPath(directory.path, equalToOrDescendantOf: rootPath) {
+                let path = directory.path
+                descendantCounts[path, default: 0] += 1
+                if directoriesByPath[path] == nil {
+                    let parent = directory.deletingLastPathComponent().standardizedFileURL
+                    directoriesByPath[path] = PhotoDirectory(
+                        url: directory,
+                        parentPath: path == rootPath ? nil : parent.path
+                    )
+                }
+                guard path != rootPath else { break }
+                directory = directory.deletingLastPathComponent().standardizedFileURL
+            }
+        }
+
+        let sortedDirectories = directoriesByPath.values.sorted { left, right in
+            if left.url.pathComponents.count != right.url.pathComponents.count {
+                return left.url.pathComponents.count < right.url.pathComponents.count
+            }
+            return left.name.localizedStandardCompare(right.name) == .orderedAscending
+        }
+        var children: [String: [PhotoDirectory]] = [:]
+        for directory in sortedDirectories {
+            guard let parentPath = directory.parentPath else { continue }
+            children[parentPath, default: []].append(directory)
+        }
+        for key in children.keys {
+            children[key]?.sort {
+                $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
+        }
+
+        directories = sortedDirectories
+        directoryChildrenByPath = children
+        directPhotoCountsByPath = directCounts
+        descendantPhotoCountsByPath = descendantCounts
+
+        if let browsingFolder,
+           directoriesByPath[browsingFolder.standardizedFileURL.path] == nil {
+            self.browsingFolder = root
+        }
+    }
+
+    nonisolated private static func isPath(_ path: String, equalToOrDescendantOf ancestorPath: String) -> Bool {
+        let path = URL(fileURLWithPath: path).standardizedFileURL.path
+        let ancestorPath = URL(fileURLWithPath: ancestorPath).standardizedFileURL.path
+        if path == ancestorPath { return true }
+        let prefix = ancestorPath == "/" ? "/" : ancestorPath + "/"
+        return path.hasPrefix(prefix)
     }
 
     private static func formatSeconds(_ seconds: Double) -> String {

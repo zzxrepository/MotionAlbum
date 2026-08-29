@@ -16,6 +16,13 @@ private struct PendingTrashRequest: Identifiable {
     let fallbackViewerItem: PhotoItem?
 }
 
+private struct DirectoryOutlineRow: Identifiable {
+    let directory: PhotoDirectory
+    let depth: Int
+
+    var id: String { directory.id }
+}
+
 private struct AppQuote: Identifiable, Equatable {
     let id = UUID()
     let text: String
@@ -122,6 +129,7 @@ struct ContentView: View {
     @State private var previousGalleryItemID: String?
     @State private var previousGalleryItemName: String?
     @State private var groupPhotosByTime = true
+    @State private var expandedDirectoryPaths = Set<String>()
 
     private let galleryThumbnailSizeRange: ClosedRange<CGFloat> = 72...1_100
     private let galleryZoomStops: [CGFloat] = [72, 96, 126, 160, 220, 300, 420, 520, 720, 900, 1_100]
@@ -196,6 +204,13 @@ struct ContentView: View {
             resetViewerContext()
             library.chooseAndOpenFolder()
         }
+        .onChange(of: library.currentFolder?.standardizedFileURL.path) { path in
+            guard let path else {
+                expandedDirectoryPaths = []
+                return
+            }
+            expandedDirectoryPaths = [path]
+        }
     }
 
     @ViewBuilder
@@ -248,19 +263,27 @@ struct ContentView: View {
 
                         Divider()
 
-                        Toggle("包含子文件夹", isOn: Binding(
+                        Toggle("包含所选目录的子目录", isOn: Binding(
                             get: { library.includeSubfolders },
                             set: { value in
                                 guard !isWorking else { return }
+                                resetViewerContext()
                                 library.includeSubfolders = value
-                                if library.currentFolder != nil {
-                                    resetViewerContext()
-                                    library.reload()
-                                }
                             }
                         ))
                         .toggleStyle(.checkbox)
-                        .disabled(library.isLoading || isWorking)
+                        .disabled(library.currentFolder == nil || isWorking)
+
+                        if library.currentFolder != nil {
+                            Divider()
+
+                            VStack(spacing: 2) {
+                                ForEach(visibleDirectoryRows) { row in
+                                    directoryOutlineRow(row)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
 
                     sidebarBlock("照片库", systemImage: "photo.stack") {
@@ -389,6 +412,86 @@ struct ContentView: View {
         }
         .padding(10)
         .background(Color.clear)
+    }
+
+    private var visibleDirectoryRows: [DirectoryOutlineRow] {
+        guard let root = library.directories.first(where: { $0.parentPath == nil }) else { return [] }
+        var rows: [DirectoryOutlineRow] = []
+
+        func append(_ directory: PhotoDirectory, depth: Int) {
+            rows.append(DirectoryOutlineRow(directory: directory, depth: depth))
+            guard expandedDirectoryPaths.contains(directory.id) else { return }
+            for child in library.childDirectories(of: directory) {
+                append(child, depth: depth + 1)
+            }
+        }
+
+        append(root, depth: 0)
+        return rows
+    }
+
+    private func directoryOutlineRow(_ row: DirectoryOutlineRow) -> some View {
+        let directory = row.directory
+        let hasChildren = library.hasChildDirectories(directory)
+        let isExpanded = expandedDirectoryPaths.contains(directory.id)
+        let isSelected = library.browsingFolder?.standardizedFileURL.path == directory.id
+        let directCount = library.directPhotoCount(in: directory)
+        let descendantCount = library.descendantPhotoCount(in: directory)
+
+        return HStack(spacing: 3) {
+            Button {
+                guard hasChildren else { return }
+                withAnimation(.easeInOut(duration: 0.14)) {
+                    if isExpanded {
+                        expandedDirectoryPaths.remove(directory.id)
+                    } else {
+                        expandedDirectoryPaths.insert(directory.id)
+                    }
+                }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .opacity(hasChildren ? 0.72 : 0)
+                    .frame(width: 15, height: 26)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(hasChildren == false)
+
+            Button {
+                guard !isWorking else { return }
+                resetViewerContext()
+                library.selectBrowsingFolder(directory.url)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: isSelected ? "folder.fill" : "folder")
+                        .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                    Text(directory.name.isEmpty ? directory.url.path : directory.name)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 4)
+                    Text(directCount.formatted())
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 7)
+                .frame(maxWidth: .infinity, minHeight: 28)
+                .contentShape(Rectangle())
+                .background(
+                    isSelected ? Color.accentColor.opacity(0.16) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                )
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity)
+            .help(
+                descendantCount == directCount
+                    ? "\(directory.url.path)\n本层 \(directCount) 个媒体文件"
+                    : "\(directory.url.path)\n本层 \(directCount) 个，连同子目录 \(descendantCount) 个媒体文件"
+            )
+        }
+        .padding(.leading, min(CGFloat(row.depth) * 12, 72))
     }
 
     private var brandHeader: some View {
@@ -580,11 +683,9 @@ struct ContentView: View {
             Group {
                 if library.filteredPhotos.isEmpty {
                     emptyState(
-                        title: "没有符合条件的照片",
+                        title: library.photoCount == 0 ? "这个目录没有照片" : "没有符合条件的照片",
                         systemImage: "photo.on.rectangle.angled",
-                        description: library.isDetecting && library.filter == .live
-                            ? "实况照片仍在后台识别，请稍候。"
-                            : "请调整筛选或搜索条件。"
+                        description: emptyLibraryDescription
                     ) { EmptyView() }
                 } else {
                     PhotoGridView(
@@ -662,7 +763,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("照片库")
                     .font(.system(size: 24, weight: .bold))
-                Text(library.currentFolder?.path ?? "选择一个照片目录开始")
+                Text(library.browsingFolder?.path ?? "选择一个照片目录开始")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -708,7 +809,7 @@ struct ContentView: View {
     private var libraryMetricBadges: some View {
         MotionGlassContainer(spacing: 6) {
             HStack(spacing: 6) {
-                metricBadge("全部", value: library.photos.count, systemImage: "photo.stack")
+                metricBadge("全部", value: library.photoCount, systemImage: "photo.stack")
                 metricBadge("实况", value: library.liveCount, systemImage: "livephoto")
                 if library.videoCount > 0 {
                     metricBadge("视频", value: library.videoCount, systemImage: "play.rectangle")
@@ -808,6 +909,20 @@ struct ContentView: View {
             return "正在后台读取拍摄时间、设备和尺寸，不影响浏览…"
         }
         return library.statusMessage
+    }
+
+    private var emptyLibraryDescription: String {
+        if library.isDetecting && library.filter == .live {
+            return "实况照片仍在后台识别，请稍候。"
+        }
+        if library.photoCount == 0, let folder = library.browsingFolder {
+            if library.includeSubfolders == false,
+               library.directories.contains(where: { $0.parentPath == folder.standardizedFileURL.path }) {
+                return "“\(folder.lastPathComponent)”本层没有照片。可在左侧选择子目录，或勾选“包含所选目录的子目录”。"
+            }
+            return "“\(folder.lastPathComponent)”中没有可支持的照片或视频，请在左侧选择其他目录。"
+        }
+        return "请调整筛选、标签或搜索条件。"
     }
 
     private var pageBackground: some View {
@@ -1115,7 +1230,7 @@ struct ContentView: View {
 
     private func filterCount(_ filter: PhotoFilter) -> Int {
         switch filter {
-        case .all: return library.photos.count
+        case .all: return library.photoCount
         case .live: return library.liveCount
         case .video: return library.videoCount
         case .selected: return library.selectedCount
@@ -1352,7 +1467,7 @@ struct ContentView: View {
 
     private func syncSelectedToAndroidPhone() {
         guard !isWorking else { return }
-        let sourceURLs = uniqueResourceURLs(from: library.photos.filter(\.isSelected))
+        let sourceURLs = uniqueResourceURLs(from: library.selectedPhotos)
         guard !sourceURLs.isEmpty else { return }
         isWorking = true
         Task {

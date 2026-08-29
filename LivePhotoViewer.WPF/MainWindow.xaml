@@ -143,7 +143,26 @@
                                     <TextBlock Text="▱  资源管理器" FontSize="10" FontWeight="Bold" Foreground="{DynamicResource SubTextBrush}" Margin="0,0,0,6"/>
                                     <Button Content="◴  最近打开" Click="BtnRecentFolders_Click" Style="{StaticResource SidebarRowStyle}" HorizontalContentAlignment="Left"/>
                                     <Separator Margin="0,4"/>
-                                    <CheckBox x:Name="IncludeSubfoldersCheckBox" Content="包含子文件夹" IsChecked="True" Click="IncludeSubfoldersCheckBox_Click" Padding="7,5"/>
+                                    <CheckBox x:Name="IncludeSubfoldersCheckBox" Content="包含所选目录的子目录" IsChecked="False" Click="IncludeSubfoldersCheckBox_Click" Padding="7,5"/>
+                                    <Separator Margin="0,4"/>
+                                    <TreeView x:Name="DirectoryTreeView"
+                                              SelectedItemChanged="DirectoryTreeView_SelectedItemChanged"
+                                              BorderThickness="0"
+                                              Background="Transparent"
+                                              MaxHeight="280"
+                                              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                        <TreeView.ItemTemplate>
+                                            <HierarchicalDataTemplate ItemsSource="{Binding Children}">
+                                                <TextBlock Text="{Binding DisplayText}" TextTrimming="CharacterEllipsis" ToolTip="{Binding FullPath}"/>
+                                            </HierarchicalDataTemplate>
+                                        </TreeView.ItemTemplate>
+                                        <TreeView.ItemContainerStyle>
+                                            <Style TargetType="TreeViewItem">
+                                                <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
+                                                <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}"/>
+                                            </Style>
+                                        </TreeView.ItemContainerStyle>
+                                    </TreeView>
                                 </StackPanel>
                             </Border>
 
