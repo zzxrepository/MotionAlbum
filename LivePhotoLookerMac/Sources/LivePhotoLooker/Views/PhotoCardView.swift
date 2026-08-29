@@ -289,7 +289,7 @@ struct PhotoCardView: View {
         HStack(spacing: showsDetails ? 4 : 0) {
             Image(systemName: "eye.fill")
             if showsDetails {
-                Text("当前查看")
+                Text("当前照片")
             }
         }
         .font(.system(size: showsDetails ? 10 : 11, weight: .bold, design: .rounded))

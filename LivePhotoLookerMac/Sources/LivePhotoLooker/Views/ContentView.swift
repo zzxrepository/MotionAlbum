@@ -115,6 +115,7 @@ struct ContentView: View {
     @State private var pendingTrashRequest: PendingTrashRequest?
     @State private var galleryThumbnailSize: CGFloat = 126
     @State private var galleryScrollTargetID: String?
+    @State private var galleryScrollTargetToken = 0
     @State private var galleryScrollToTopToken = 0
     @State private var focusedGalleryItemID: String?
     @State private var focusedGalleryItemName: String?
@@ -575,11 +576,11 @@ struct ContentView: View {
                         thumbnailSize: galleryThumbnailSize,
                         thumbnailSizeRange: galleryThumbnailSizeRange,
                         scrollTargetID: galleryScrollTargetID,
+                        scrollTargetToken: galleryScrollTargetToken,
                         scrollToTopToken: galleryScrollToTopToken,
                         focusedItemID: focusedGalleryItemID,
                         groupByTime: groupPhotosByTime,
                         onThumbnailSizeChange: setGalleryThumbnailSize,
-                        onScrollTargetConsumed: { galleryScrollTargetID = nil },
                         onOpen: openViewer,
                         onToggleSelection: library.toggleSelection,
                         onReveal: library.revealInFinder,
@@ -668,17 +669,15 @@ struct ContentView: View {
     }
 
     private var libraryHeaderControls: some View {
-        ViewThatFits(in: .horizontal) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 libraryMetricBadges
-                Spacer(minLength: 12)
-                libraryBrowseControls
+                Spacer(minLength: 0)
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                libraryMetricBadges
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
                 libraryBrowseControls
-                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
     }
@@ -716,10 +715,14 @@ struct ContentView: View {
                 Button {
                     returnToFocusedGalleryItem()
                 } label: {
-                    Label("回到当前查看", systemImage: "scope")
+                    Label("定位当前照片", systemImage: "scope")
                 }
                 .buttonStyle(.bordered)
-                .help(focusedGalleryItemName.map { "回到当前查看的照片：\($0)" } ?? "回到当前查看的照片")
+                .help(
+                    focusedGalleryItemName.map {
+                        "当前照片是最近单击或打开的照片；定位到：\($0)"
+                    } ?? "定位到最近单击或打开的照片"
+                )
             }
             Button {
                 galleryScrollToTopToken &+= 1
@@ -1092,8 +1095,10 @@ struct ContentView: View {
 
     private func closeViewer(focusing item: PhotoItem) {
         setFocusedGalleryItem(item)
-        galleryScrollTargetID = item.id
         viewerItem = nil
+        DispatchQueue.main.async {
+            requestGalleryScroll(to: item.id)
+        }
     }
 
     private func setFocusedGalleryItem(_ item: PhotoItem?) {
@@ -1105,6 +1110,7 @@ struct ContentView: View {
 
         guard focusedGalleryItemID != item.id else {
             focusedGalleryItemName = item.fileName
+            library.setStatus("当前照片：\(item.fileName)")
             return
         }
 
@@ -1114,6 +1120,7 @@ struct ContentView: View {
         }
         focusedGalleryItemID = item.id
         focusedGalleryItemName = item.fileName
+        library.setStatus("当前照片：\(item.fileName)")
     }
 
     private func resetViewerContext() {
@@ -1132,10 +1139,8 @@ struct ContentView: View {
             return
         }
 
-        galleryScrollTargetID = nil
-        DispatchQueue.main.async {
-            galleryScrollTargetID = focusedGalleryItemID
-        }
+        requestGalleryScroll(to: focusedGalleryItemID)
+        library.setStatus("已定位当前照片：\(focusedGalleryItemName ?? "未知照片")")
     }
 
     private func returnToPreviousGalleryItem() {
@@ -1152,10 +1157,13 @@ struct ContentView: View {
         self.previousGalleryItemID = currentID
         previousGalleryItemName = currentName
 
-        galleryScrollTargetID = nil
-        DispatchQueue.main.async {
-            galleryScrollTargetID = target.id
-        }
+        requestGalleryScroll(to: target.id)
+        library.setStatus("已返回上次查看：\(target.fileName)")
+    }
+
+    private func requestGalleryScroll(to itemID: String) {
+        galleryScrollTargetID = itemID
+        galleryScrollTargetToken &+= 1
     }
 
     private func requestTrashSelectedItems() {
@@ -1230,7 +1238,7 @@ struct ContentView: View {
                     if let fallback = request.fallbackViewerItem,
                        removedIDs.contains(fallback.id) == false {
                         self.setFocusedGalleryItem(fallback)
-                        self.galleryScrollTargetID = fallback.id
+                        self.requestGalleryScroll(to: fallback.id)
                         self.viewerItem = fallback
                     } else {
                         self.setFocusedGalleryItem(nil)
@@ -1361,7 +1369,7 @@ struct ContentView: View {
     private func moveViewer(from item: PhotoItem, offset: Int) {
         if let target = viewerNeighbor(of: item, offset: offset) {
             setFocusedGalleryItem(target)
-            galleryScrollTargetID = target.id
+            requestGalleryScroll(to: target.id)
             viewerItem = target
         }
     }

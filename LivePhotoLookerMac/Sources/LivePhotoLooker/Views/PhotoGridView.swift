@@ -7,11 +7,11 @@ struct PhotoGridView: View {
     let thumbnailSize: CGFloat
     let thumbnailSizeRange: ClosedRange<CGFloat>
     let scrollTargetID: String?
+    let scrollTargetToken: Int
     let scrollToTopToken: Int
     let focusedItemID: String?
     let groupByTime: Bool
     let onThumbnailSizeChange: (CGFloat) -> Void
-    let onScrollTargetConsumed: () -> Void
     let onOpen: (PhotoItem) -> Void
     let onToggleSelection: (PhotoItem) -> Void
     let onReveal: (PhotoItem) -> Void
@@ -125,15 +125,12 @@ struct PhotoGridView: View {
                         proxy.scrollTo(Self.topID, anchor: .top)
                     }
                 }
-                .task(id: scrollTargetID) {
-                    guard let scrollTargetID else { return }
+                .task(id: scrollTargetToken) {
+                    guard scrollTargetToken != 0, let scrollTargetID else { return }
                     try? await Task.sleep(nanoseconds: 20_000_000)
-                    var transaction = Transaction()
-                    transaction.disablesAnimations = true
-                    withTransaction(transaction) {
+                    withAnimation(.easeInOut(duration: 0.20)) {
                         proxy.scrollTo(scrollTargetID, anchor: .center)
                     }
-                    onScrollTargetConsumed()
                 }
             }
         }
