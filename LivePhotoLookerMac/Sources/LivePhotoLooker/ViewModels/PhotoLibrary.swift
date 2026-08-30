@@ -82,6 +82,7 @@ final class PhotoLibrary: ObservableObject {
     private var visibleCache: [PhotoItem] = []
     private var photoIDSet = Set<String>()
     private var directoryChildrenByPath: [String: [PhotoDirectory]] = [:]
+    private var directPhotosByPath: [String: [PhotoItem]] = [:]
     private var directPhotoCountsByPath: [String: Int] = [:]
     private var descendantPhotoCountsByPath: [String: Int] = [:]
 
@@ -237,6 +238,7 @@ final class PhotoLibrary: ObservableObject {
         browsingFolder = folder
         directories = [PhotoDirectory(url: folder, parentPath: nil)]
         directoryChildrenByPath = [:]
+        directPhotosByPath = [:]
         directPhotoCountsByPath = [:]
         descendantPhotoCountsByPath = [:]
         photos = []
@@ -455,6 +457,10 @@ final class PhotoLibrary: ObservableObject {
 
     func hasChildDirectories(_ directory: PhotoDirectory) -> Bool {
         directoryChildrenByPath[directory.id]?.isEmpty == false
+    }
+
+    func directPhotos(in directory: PhotoDirectory) -> [PhotoItem] {
+        directPhotosByPath[directory.id] ?? []
     }
 
     func directPhotoCount(in directory: PhotoDirectory) -> Int {
@@ -730,12 +736,14 @@ final class PhotoLibrary: ObservableObject {
         var directoriesByPath: [String: PhotoDirectory] = [
             rootPath: PhotoDirectory(url: root, parentPath: nil)
         ]
+        var directPhotos: [String: [PhotoItem]] = [:]
         var directCounts: [String: Int] = [:]
         var descendantCounts: [String: Int] = [:]
 
         for item in photos {
             var directory = item.url.deletingLastPathComponent().standardizedFileURL
             guard Self.isPath(directory.path, equalToOrDescendantOf: rootPath) else { continue }
+            directPhotos[directory.path, default: []].append(item)
             directCounts[directory.path, default: 0] += 1
 
             while Self.isPath(directory.path, equalToOrDescendantOf: rootPath) {
@@ -769,9 +777,15 @@ final class PhotoLibrary: ObservableObject {
                 $0.name.localizedStandardCompare($1.name) == .orderedAscending
             }
         }
+        for key in directPhotos.keys {
+            directPhotos[key]?.sort {
+                $0.fileName.localizedStandardCompare($1.fileName) == .orderedAscending
+            }
+        }
 
         directories = sortedDirectories
         directoryChildrenByPath = children
+        directPhotosByPath = directPhotos
         directPhotoCountsByPath = directCounts
         descendantPhotoCountsByPath = descendantCounts
 

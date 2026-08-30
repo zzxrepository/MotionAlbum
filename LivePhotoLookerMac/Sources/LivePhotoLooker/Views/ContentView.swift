@@ -16,11 +16,18 @@ private struct PendingTrashRequest: Identifiable {
     let fallbackViewerItem: PhotoItem?
 }
 
-private struct DirectoryOutlineRow: Identifiable {
-    let directory: PhotoDirectory
-    let depth: Int
+private enum DirectoryOutlineEntry: Identifiable {
+    case directory(PhotoDirectory, depth: Int)
+    case media(PhotoItem, directory: PhotoDirectory, depth: Int)
 
-    var id: String { directory.id }
+    var id: String {
+        switch self {
+        case let .directory(directory, _):
+            return "directory:\(directory.id)"
+        case let .media(item, _, _):
+            return "media:\(item.id)"
+        }
+    }
 }
 
 private struct AppQuote: Identifiable, Equatable {
@@ -445,9 +452,14 @@ struct ContentView: View {
                         if library.currentFolder != nil {
                             Divider()
 
-                            VStack(spacing: 2) {
-                                ForEach(visibleDirectoryRows) { row in
-                                    directoryOutlineRow(row)
+                            LazyVStack(spacing: 2) {
+                                ForEach(visibleDirectoryEntries) { entry in
+                                    switch entry {
+                                    case let .directory(directory, depth):
+                                        directoryOutlineRow(directory, depth: depth)
+                                    case let .media(item, directory, depth):
+                                        directoryMediaRow(item, directory: directory, depth: depth)
+                                    }
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -582,25 +594,28 @@ struct ContentView: View {
         .background(Color.clear)
     }
 
-    private var visibleDirectoryRows: [DirectoryOutlineRow] {
+    private var visibleDirectoryEntries: [DirectoryOutlineEntry] {
         guard let root = library.directories.first(where: { $0.parentPath == nil }) else { return [] }
-        var rows: [DirectoryOutlineRow] = []
+        var entries: [DirectoryOutlineEntry] = []
 
         func append(_ directory: PhotoDirectory, depth: Int) {
-            rows.append(DirectoryOutlineRow(directory: directory, depth: depth))
+            entries.append(.directory(directory, depth: depth))
             guard expandedDirectoryPaths.contains(directory.id) else { return }
             for child in library.childDirectories(of: directory) {
                 append(child, depth: depth + 1)
             }
+            for item in library.directPhotos(in: directory) {
+                entries.append(.media(item, directory: directory, depth: depth + 1))
+            }
         }
 
         append(root, depth: 0)
-        return rows
+        return entries
     }
 
-    private func directoryOutlineRow(_ row: DirectoryOutlineRow) -> some View {
-        let directory = row.directory
-        let hasChildren = library.hasChildDirectories(directory)
+    private func directoryOutlineRow(_ directory: PhotoDirectory, depth: Int) -> some View {
+        let hasExpandableContent = library.hasChildDirectories(directory)
+            || library.directPhotoCount(in: directory) > 0
         let isExpanded = expandedDirectoryPaths.contains(directory.id)
         let isSelected = library.browsingFolder?.standardizedFileURL.path == directory.id
         let directCount = library.directPhotoCount(in: directory)
@@ -608,7 +623,7 @@ struct ContentView: View {
 
         return HStack(spacing: 3) {
             Button {
-                guard hasChildren else { return }
+                guard hasExpandableContent else { return }
                 withAnimation(.easeInOut(duration: 0.14)) {
                     if isExpanded {
                         expandedDirectoryPaths.remove(directory.id)
@@ -620,17 +635,22 @@ struct ContentView: View {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9, weight: .semibold))
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    .opacity(hasChildren ? 0.72 : 0)
+                    .opacity(hasExpandableContent ? 0.72 : 0)
                     .frame(width: 15, height: 26)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(hasChildren == false)
+            .disabled(hasExpandableContent == false)
 
             Button {
                 guard !isWorking else { return }
                 resetViewerContext()
                 library.selectBrowsingFolder(directory.url)
+                if hasExpandableContent {
+                    withAnimation(.easeInOut(duration: 0.14)) {
+                        expandedDirectoryPaths = expandedDirectoryPaths.union([directory.id])
+                    }
+                }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: isSelected ? "folder.fill" : "folder")
@@ -659,7 +679,43 @@ struct ContentView: View {
                     : "\(directory.url.path)\n共 \(totalCount) 个媒体文件，其中本层 \(directCount) 个"
             )
         }
-        .padding(.leading, min(CGFloat(row.depth) * 12, 72))
+        .padding(.leading, min(CGFloat(depth) * 12, 72))
+    }
+
+    private func directoryMediaRow(
+        _ item: PhotoItem,
+        directory: PhotoDirectory,
+        depth: Int
+    ) -> some View {
+        let isFocused = focusedGalleryItemID == item.id
+
+        return Button {
+            focusDirectoryMedia(item, in: directory)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: item.mediaKind == .video ? "play.rectangle" : "photo")
+                    .font(.system(size: 12))
+                    .foregroundStyle(isFocused ? Color.accentColor : Color.secondary)
+                    .frame(width: 16)
+                Text(item.fileName)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 4)
+            }
+            .padding(.horizontal, 7)
+            .frame(maxWidth: .infinity, minHeight: 26)
+            .contentShape(Rectangle())
+            .background(
+                isFocused ? Color.accentColor.opacity(0.13) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+            )
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .padding(.leading, min(CGFloat(depth) * 12 + 18, 90))
+        .help(item.url.path)
+        .accessibilityLabel("媒体文件 \(item.fileName)")
+        .accessibilityIdentifier("resource.media.\(item.id)")
     }
 
     private var brandHeader: some View {
@@ -1421,6 +1477,25 @@ struct ContentView: View {
         setFocusedGalleryItem(item)
         viewerItem = nil
         DispatchQueue.main.async {
+            requestGalleryScroll(to: item.id)
+        }
+    }
+
+    private func focusDirectoryMedia(_ item: PhotoItem, in directory: PhotoDirectory) {
+        guard !isWorking else { return }
+
+        viewerItem = nil
+        library.filter = .all
+        library.selectTag(nil)
+        library.searchText = ""
+        library.selectBrowsingFolder(directory.url)
+        setFocusedGalleryItem(item)
+
+        DispatchQueue.main.async {
+            guard library.filteredPhotos.contains(where: { $0.id == item.id }) else {
+                library.setStatus("无法在当前目录中定位：\(item.fileName)")
+                return
+            }
             requestGalleryScroll(to: item.id)
         }
     }

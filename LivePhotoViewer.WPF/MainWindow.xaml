@@ -194,7 +194,10 @@
                                               ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                                         <TreeView.ItemTemplate>
                                             <HierarchicalDataTemplate ItemsSource="{Binding Children}">
-                                                <TextBlock Text="{Binding DisplayText}" TextTrimming="CharacterEllipsis" ToolTip="{Binding ToolTipText}"/>
+                                                <DockPanel ToolTip="{Binding ToolTipText}">
+                                                    <TextBlock Text="{Binding IconText}" Width="20" Foreground="{DynamicResource SubTextBrush}"/>
+                                                    <TextBlock Text="{Binding DisplayText}" TextTrimming="CharacterEllipsis"/>
+                                                </DockPanel>
                                             </HierarchicalDataTemplate>
                                         </TreeView.ItemTemplate>
                                         <TreeView.ItemContainerStyle>

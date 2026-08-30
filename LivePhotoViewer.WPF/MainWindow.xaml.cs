@@ -174,7 +174,14 @@ namespace LivePhotoViewer.WPF
 
         private void DirectoryTreeView_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
         {
-            if (_suppressDirectorySelection || e.NewValue is not DirectoryNode node || !Directory.Exists(node.FullPath)) return;
+            if (_suppressDirectorySelection || e.NewValue is not DirectoryNode node) return;
+            if (node.IsMediaFile)
+            {
+                FocusDirectoryTreeMedia(node);
+                return;
+            }
+            if (!Directory.Exists(node.FullPath)) return;
+            node.IsExpanded = node.Children.Count > 0;
             _browsingDirectory = Path.GetFullPath(node.FullPath);
             _focusedPhotoId = null;
             _previousFocusedPhotoId = null;
@@ -413,8 +420,22 @@ namespace LivePhotoViewer.WPF
                 if (parentPath != null && nodes.TryGetValue(parentPath, out DirectoryNode? parent))
                     parent.Children.Add(node);
             }
-            SortDirectoryNodes(nodes[rootPath]);
             CalculateTotalPhotoCount(nodes[rootPath]);
+
+            foreach (PhotoItem photo in _photos)
+            {
+                string directory = NormalizeDirectoryPath(photo.Directory);
+                if (!nodes.TryGetValue(directory, out DirectoryNode? parent)) continue;
+                parent.Children.Add(new DirectoryNode
+                {
+                    Name = photo.FileName,
+                    FullPath = photo.FilePath,
+                    IsMediaFile = true,
+                    IsVideo = photo.IsVideo,
+                    MediaStableId = photo.StableId
+                });
+            }
+            SortDirectoryNodes(nodes[rootPath]);
 
             if (!nodes.ContainsKey(_browsingDirectory)) _browsingDirectory = rootPath;
             foreach (DirectoryNode node in nodes.Values)
@@ -431,15 +452,40 @@ namespace LivePhotoViewer.WPF
         private static void SortDirectoryNodes(DirectoryNode node)
         {
             node.Children.Sort((left, right) =>
-                StringComparer.CurrentCultureIgnoreCase.Compare(left.Name, right.Name));
-            foreach (DirectoryNode child in node.Children) SortDirectoryNodes(child);
+            {
+                int typeOrder = left.IsMediaFile.CompareTo(right.IsMediaFile);
+                return typeOrder != 0
+                    ? typeOrder
+                    : StringComparer.CurrentCultureIgnoreCase.Compare(left.Name, right.Name);
+            });
+            foreach (DirectoryNode child in node.Children.Where(child => !child.IsMediaFile))
+                SortDirectoryNodes(child);
         }
 
         private static int CalculateTotalPhotoCount(DirectoryNode node)
         {
+            if (node.IsMediaFile) return 0;
             node.TotalPhotoCount = node.PhotoCount
                 + node.Children.Sum(CalculateTotalPhotoCount);
             return node.TotalPhotoCount;
+        }
+
+        private void FocusDirectoryTreeMedia(DirectoryNode node)
+        {
+            PhotoItem? photo = _photos.FirstOrDefault(item =>
+                string.Equals(item.StableId, node.MediaStableId, StringComparison.OrdinalIgnoreCase));
+            if (photo == null) return;
+
+            _browsingDirectory = NormalizeDirectoryPath(photo.Directory);
+            _filter = LibraryFilter.All;
+            _selectedTag = null;
+            SearchBox.Text = string.Empty;
+            LibraryPathText.Text = _browsingDirectory;
+            UpdateFilterVisuals();
+            RenderGallery();
+            SetFocusedPhoto(photo);
+            SetStatus($"当前照片：{photo.FileName}");
+            Dispatcher.BeginInvoke(new Action(() => ScrollToPhoto(photo.StableId)));
         }
 
         private static string DirectoryName(string path)
