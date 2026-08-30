@@ -53,6 +53,10 @@ namespace LivePhotoViewer.WPF
         private double _galleryCardSize = 126;
         private bool _isSidebarVisible = true;
         private const double DefaultSidebarWidth = 238;
+        private const double MinimumSidebarWidth = 210;
+        private const double MaximumSidebarWidth = 600;
+        private const double MinimumLibraryWidth = 620;
+        private const double SidebarDividerWidth = 12;
         private double _sidebarWidth = DefaultSidebarWidth;
         private bool _suppressGalleryZoomEvent;
         private double _galleryManipulationBaseSize;
@@ -84,6 +88,7 @@ namespace LivePhotoViewer.WPF
             Closing += MainWindow_Closing;
             SizeChanged += (_, _) =>
             {
+                UpdateSidebarWidthForWindow();
                 if (IsShowcaseMode && _visiblePhotos.Count > 0) RenderGallery();
             };
         }
@@ -130,8 +135,8 @@ namespace LivePhotoViewer.WPF
             _showcasePreviewCts?.Cancel();
             _quoteTimer.Stop();
             StopMediaPlayback();
-            if (_isSidebarVisible && SidebarColumn.ActualWidth >= 210)
-                _settings.SidebarWidth = SidebarColumn.ActualWidth;
+            if (_isSidebarVisible)
+                _settings.SidebarWidth = _sidebarWidth;
             _mediaPlayer?.Dispose();
             _libVlc?.Dispose();
         }
@@ -1443,19 +1448,16 @@ namespace LivePhotoViewer.WPF
         {
             if (_isSidebarVisible)
             {
-                SidebarColumn.MinWidth = 210;
-                SidebarColumn.MaxWidth = 600;
-                SidebarColumn.Width = new GridLength(Math.Clamp(_sidebarWidth, 210, 600));
+                double maximumWidth = EffectiveMaximumSidebarWidth();
+                SidebarColumn.MinWidth = MinimumSidebarWidth;
+                SidebarColumn.MaxWidth = maximumWidth;
+                SidebarColumn.Width = new GridLength(
+                    Math.Clamp(_sidebarWidth, MinimumSidebarWidth, maximumWidth));
                 SidebarPanel.Visibility = Visibility.Visible;
                 SidebarSplitter.Visibility = Visibility.Visible;
             }
             else
             {
-                if (SidebarColumn.ActualWidth >= 210)
-                {
-                    _sidebarWidth = SidebarColumn.ActualWidth;
-                    _settings.SidebarWidth = _sidebarWidth;
-                }
                 SidebarColumn.MinWidth = 0;
                 SidebarColumn.Width = new GridLength(0);
                 SidebarPanel.Visibility = Visibility.Collapsed;
@@ -1465,7 +1467,11 @@ namespace LivePhotoViewer.WPF
 
         private void SidebarSplitter_DragCompleted(object sender, DragCompletedEventArgs e)
         {
-            _sidebarWidth = Math.Clamp(SidebarColumn.ActualWidth, 210, 600);
+            double maximumWidth = EffectiveMaximumSidebarWidth();
+            _sidebarWidth = Math.Clamp(
+                SidebarColumn.ActualWidth,
+                MinimumSidebarWidth,
+                maximumWidth);
             SidebarColumn.Width = new GridLength(_sidebarWidth);
             _settings.SidebarWidth = _sidebarWidth;
         }
@@ -1476,6 +1482,24 @@ namespace LivePhotoViewer.WPF
             SidebarColumn.Width = new GridLength(_sidebarWidth);
             _settings.SidebarWidth = _sidebarWidth;
             e.Handled = true;
+        }
+
+        private double EffectiveMaximumSidebarWidth()
+        {
+            if (GridMode.ActualWidth <= 0) return MaximumSidebarWidth;
+            return Math.Clamp(
+                GridMode.ActualWidth - MinimumLibraryWidth - SidebarDividerWidth,
+                MinimumSidebarWidth,
+                MaximumSidebarWidth);
+        }
+
+        private void UpdateSidebarWidthForWindow()
+        {
+            if (!_isSidebarVisible || GridMode.ActualWidth <= 0) return;
+            double maximumWidth = EffectiveMaximumSidebarWidth();
+            SidebarColumn.MaxWidth = maximumWidth;
+            SidebarColumn.Width = new GridLength(
+                Math.Clamp(_sidebarWidth, MinimumSidebarWidth, maximumWidth));
         }
 
         private async void BtnExport_Click(object sender, RoutedEventArgs e)

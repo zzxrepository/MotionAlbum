@@ -115,7 +115,7 @@ private enum AppIconImageProvider {
 struct ContentView: View {
     @StateObject private var library = PhotoLibrary()
     @AppStorage("workspace.sidebar.isVisible") private var isSidebarVisible = true
-    @AppStorage("workspace.sidebar.preferredWidth.v2") private var sidebarWidth = 238.0
+    @AppStorage("workspace.sidebar.preferredWidth.v2") private var preferredSidebarWidth = 238.0
     @State private var viewerItem: PhotoItem?
     @State private var alert: UserFacingAlert?
     @State private var showPhoneSyncConfirmation = false
@@ -131,40 +131,75 @@ struct ContentView: View {
     @State private var previousGalleryItemName: String?
     @State private var groupPhotosByTime = true
     @State private var expandedDirectoryPaths = Set<String>()
+    @State private var visibleSidebarWidth = 238.0
     @State private var sidebarResizeStartWidth: Double?
     @State private var isSidebarResizeHandleHovered = false
+    @State private var isSidebarResizing = false
 
     private let galleryThumbnailSizeRange: ClosedRange<CGFloat> = 72...1_100
     private let galleryZoomStops: [CGFloat] = [72, 96, 126, 160, 220, 300, 420, 520, 720, 900, 1_100]
     private let workspaceCornerRadius: CGFloat = 14
     private let defaultSidebarWidth = 238.0
     private let sidebarWidthRange = 210.0...600.0
+    private let minimumLibraryWidth = 620.0
+    private let sidebarDividerWidth = 12.0
 
     var body: some View {
         ZStack {
             MotionWorkspaceBackground()
 
-            HStack(spacing: 0) {
-                if isSidebarVisible {
-                    workspacePanel(usesGlass: true) {
-                        sidebar
+            GeometryReader { geometry in
+                let sidebarMaximumWidth = maximumSidebarWidth(
+                    for: Double(geometry.size.width)
+                )
+
+                HStack(spacing: 0) {
+                    if isSidebarVisible {
+                        workspacePanel(usesGlass: true) {
+                            sidebar
+                        }
+                        .frame(
+                            width: clampedSidebarWidth(
+                                visibleSidebarWidth,
+                                maximumWidth: sidebarMaximumWidth
+                            )
+                        )
+                        .transition(.move(edge: .leading).combined(with: .opacity))
+                        .accessibilityIdentifier("workspace.sidebar")
+
+                        sidebarResizeHandle(maximumWidth: sidebarMaximumWidth)
                     }
-                    .frame(width: clampedSidebarWidth(sidebarWidth))
-                    .transition(.move(edge: .leading).combined(with: .opacity))
-                    .accessibilityIdentifier("workspace.sidebar")
 
-                    sidebarResizeHandle
+                    workspacePanel(usesGlass: false) {
+                        detail
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityIdentifier("workspace.library")
                 }
-
-                workspacePanel(usesGlass: false) {
-                    detail
+                .padding(.horizontal, 10)
+                .padding(.top, 9)
+                .padding(.bottom, 10)
+                .onAppear {
+                    visibleSidebarWidth = clampedSidebarWidth(
+                        preferredSidebarWidth,
+                        maximumWidth: sidebarMaximumWidth
+                    )
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .accessibilityIdentifier("workspace.library")
+                .onChange(of: geometry.size.width) { width in
+                    guard !isSidebarResizing else { return }
+                    visibleSidebarWidth = clampedSidebarWidth(
+                        preferredSidebarWidth,
+                        maximumWidth: maximumSidebarWidth(for: Double(width))
+                    )
+                }
+                .onChange(of: preferredSidebarWidth) { width in
+                    guard !isSidebarResizing else { return }
+                    visibleSidebarWidth = clampedSidebarWidth(
+                        width,
+                        maximumWidth: sidebarMaximumWidth
+                    )
+                }
             }
-            .padding(.horizontal, 10)
-            .padding(.top, 9)
-            .padding(.bottom, 10)
         }
         .frame(minWidth: 1080, minHeight: 700)
         .animation(.easeInOut(duration: 0.20), value: isSidebarVisible)
@@ -220,58 +255,130 @@ struct ContentView: View {
         }
     }
 
-    private var sidebarResizeHandle: some View {
-        ZStack {
+    private func sidebarResizeHandle(maximumWidth: Double) -> some View {
+        let isActive = isSidebarResizeHandleHovered || isSidebarResizing
+
+        return ZStack {
             Rectangle()
                 .fill(Color.clear)
+
             RoundedRectangle(cornerRadius: 1, style: .continuous)
                 .fill(
-                    isSidebarResizeHandleHovered
-                        ? Color.accentColor.opacity(0.55)
+                    isActive
+                        ? Color.accentColor.opacity(0.72)
                         : Color.primary.opacity(0.08)
                 )
-                .frame(width: isSidebarResizeHandleHovered ? 3 : 1)
+                .frame(width: isActive ? 3 : 1)
                 .padding(.vertical, 12)
+
+            if isActive {
+                Capsule()
+                    .fill(Color.accentColor.opacity(isSidebarResizing ? 0.95 : 0.72))
+                    .frame(width: 4, height: 56)
+                    .shadow(color: Color.accentColor.opacity(0.24), radius: 5)
+                    .allowsHitTesting(false)
+            }
         }
-        .frame(width: 10)
+        .frame(width: sidebarDividerWidth)
         .frame(maxHeight: .infinity)
         .contentShape(Rectangle())
-        .onHover { isSidebarResizeHandleHovered = $0 }
+        .onHover { hovering in
+            isSidebarResizeHandleHovered = hovering
+            if hovering || isSidebarResizing {
+                NSCursor.resizeLeftRight.set()
+            } else {
+                NSCursor.arrow.set()
+            }
+        }
         .background(
-            isSidebarResizeHandleHovered
-                ? Color.accentColor.opacity(0.045)
+            isActive
+                ? Color.accentColor.opacity(0.055)
                 : Color.clear
         )
         .gesture(
-            DragGesture(minimumDistance: 0)
+            DragGesture(minimumDistance: 1)
                 .onChanged { value in
                     if sidebarResizeStartWidth == nil {
-                        sidebarResizeStartWidth = sidebarWidth
+                        sidebarResizeStartWidth = visibleSidebarWidth
+                        isSidebarResizing = true
+                        NSCursor.resizeLeftRight.set()
                     }
-                    let startWidth = sidebarResizeStartWidth ?? sidebarWidth
-                    sidebarWidth = clampedSidebarWidth(
-                        startWidth + Double(value.translation.width)
-                    )
+                    let startWidth = sidebarResizeStartWidth ?? visibleSidebarWidth
+                    var transaction = Transaction()
+                    transaction.animation = nil
+                    withTransaction(transaction) {
+                        visibleSidebarWidth = clampedSidebarWidth(
+                            startWidth + Double(value.translation.width),
+                            maximumWidth: maximumWidth
+                        )
+                    }
                 }
                 .onEnded { _ in
+                    preferredSidebarWidth = visibleSidebarWidth
                     sidebarResizeStartWidth = nil
+                    isSidebarResizing = false
+                    if !isSidebarResizeHandleHovered {
+                        NSCursor.arrow.set()
+                    }
                 }
         )
         .simultaneousGesture(
             TapGesture(count: 2)
                 .onEnded {
                     withAnimation(.easeInOut(duration: 0.16)) {
-                        sidebarWidth = defaultSidebarWidth
+                        visibleSidebarWidth = clampedSidebarWidth(
+                            defaultSidebarWidth,
+                            maximumWidth: maximumWidth
+                        )
                     }
+                    preferredSidebarWidth = defaultSidebarWidth
                 }
         )
+        .overlay(alignment: .top) {
+            if isSidebarResizing {
+                Text("\(Int(visibleSidebarWidth.rounded())) pt")
+                    .font(.caption2.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .motionGlassCapsule(tint: Color.accentColor.opacity(0.10))
+                    .offset(y: 16)
+                    .allowsHitTesting(false)
+                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: isActive)
+        .animation(.easeOut(duration: 0.12), value: isSidebarResizing)
+        .zIndex(20)
+        .onDisappear {
+            if isSidebarResizeHandleHovered || isSidebarResizing {
+                NSCursor.arrow.set()
+            }
+        }
         .help("沿整条边界左右拖动调整宽度；双击恢复默认宽度")
         .accessibilityLabel("调整侧边栏宽度")
         .accessibilityIdentifier("workspace.sidebar.resize")
     }
 
-    private func clampedSidebarWidth(_ width: Double) -> Double {
-        min(sidebarWidthRange.upperBound, max(sidebarWidthRange.lowerBound, width))
+    private func maximumSidebarWidth(for containerWidth: Double) -> Double {
+        let availableWidth = containerWidth
+            - 20
+            - sidebarDividerWidth
+            - minimumLibraryWidth
+        return min(
+            sidebarWidthRange.upperBound,
+            max(sidebarWidthRange.lowerBound, availableWidth)
+        )
+    }
+
+    private func clampedSidebarWidth(
+        _ width: Double,
+        maximumWidth: Double? = nil
+    ) -> Double {
+        min(
+            maximumWidth ?? sidebarWidthRange.upperBound,
+            max(sidebarWidthRange.lowerBound, width)
+        )
     }
 
     @ViewBuilder

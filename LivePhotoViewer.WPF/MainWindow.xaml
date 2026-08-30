@@ -67,6 +67,47 @@
             <Setter Property="Padding" Value="8,3"/>
             <Setter Property="Margin" Value="0,0,6,0"/>
         </Style>
+
+        <Style x:Key="SidebarSplitterStyle" TargetType="GridSplitter">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Cursor" Value="SizeWE"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="GridSplitter">
+                        <Grid x:Name="HitArea" Background="Transparent">
+                            <Border x:Name="Track"
+                                    Width="1"
+                                    Margin="0,12"
+                                    HorizontalAlignment="Center"
+                                    Background="{DynamicResource BorderBrush}"/>
+                            <Border x:Name="Grip"
+                                    Width="4"
+                                    Height="56"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    Background="#B81677FF"
+                                    CornerRadius="2"
+                                    Opacity="0"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="HitArea" Property="Background" Value="#0D1677FF"/>
+                                <Setter TargetName="Track" Property="Width" Value="3"/>
+                                <Setter TargetName="Track" Property="Background" Value="#B81677FF"/>
+                                <Setter TargetName="Grip" Property="Opacity" Value="1"/>
+                            </Trigger>
+                            <Trigger Property="IsDragging" Value="True">
+                                <Setter TargetName="HitArea" Property="Background" Value="#141677FF"/>
+                                <Setter TargetName="Track" Property="Width" Value="3"/>
+                                <Setter TargetName="Track" Property="Background" Value="#E61677FF"/>
+                                <Setter TargetName="Grip" Property="Background" Value="#F21677FF"/>
+                                <Setter TargetName="Grip" Property="Opacity" Value="1"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <Grid x:Name="RootGrid" Background="{DynamicResource WindowBgBrush}">
@@ -104,7 +145,7 @@
         <Grid x:Name="GridMode" Grid.Row="1" Margin="8">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition x:Name="SidebarColumn" Width="238" MinWidth="210" MaxWidth="600"/>
-                <ColumnDefinition Width="8"/>
+                <ColumnDefinition Width="12"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
@@ -203,11 +244,10 @@
 
             <GridSplitter x:Name="SidebarSplitter"
                           Grid.Column="1"
-                          Width="8"
+                          Width="12"
                           HorizontalAlignment="Stretch"
                           VerticalAlignment="Stretch"
-                          Background="Transparent"
-                          Cursor="SizeWE"
+                          Style="{StaticResource SidebarSplitterStyle}"
                           ResizeDirection="Columns"
                           ResizeBehavior="PreviousAndNext"
                           ShowsPreview="False"
