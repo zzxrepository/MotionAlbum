@@ -309,6 +309,10 @@ namespace LivePhotoViewer.WPF
         private PhotoItem CreatePhotoItem(string path, MediaKind kind, string? companion)
         {
             var info = new FileInfo(path);
+            long fileSize = info.Exists ? info.Length : 0;
+            long companionSize = companion is { Length: > 0 } companionPath && File.Exists(companionPath)
+                ? new FileInfo(companionPath).Length
+                : 0;
             return new PhotoItem
             {
                 FilePath = path,
@@ -316,7 +320,8 @@ namespace LivePhotoViewer.WPF
                 Directory = Path.GetDirectoryName(path) ?? _currentDirectory,
                 CompanionVideoPath = companion,
                 MediaKind = kind,
-                FileSize = info.Exists ? info.Length : 0,
+                FileSize = fileSize,
+                OriginalResourceFileSize = fileSize + companionSize,
                 ModifiedAt = info.Exists ? info.LastWriteTime : DateTime.MinValue,
                 TimelineDate = info.Exists ? info.LastWriteTime : DateTime.MinValue
             };
@@ -398,6 +403,7 @@ namespace LivePhotoViewer.WPF
                     nodes[directory] = directNode;
                 }
                 directNode.PhotoCount++;
+                directNode.PhotoSize += photo.OriginalResourceFileSize;
 
                 string cursor = directory;
                 while (!string.Equals(cursor, rootPath, StringComparison.OrdinalIgnoreCase))
@@ -465,8 +471,13 @@ namespace LivePhotoViewer.WPF
         private static int CalculateTotalPhotoCount(DirectoryNode node)
         {
             if (node.IsMediaFile) return 0;
-            node.TotalPhotoCount = node.PhotoCount
-                + node.Children.Sum(CalculateTotalPhotoCount);
+            node.TotalPhotoCount = node.PhotoCount;
+            node.TotalPhotoSize = node.PhotoSize;
+            foreach (DirectoryNode child in node.Children)
+            {
+                node.TotalPhotoCount += CalculateTotalPhotoCount(child);
+                node.TotalPhotoSize += child.TotalPhotoSize;
+            }
             return node.TotalPhotoCount;
         }
 

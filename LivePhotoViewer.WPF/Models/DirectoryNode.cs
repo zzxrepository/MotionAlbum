@@ -30,18 +30,22 @@ namespace LivePhotoViewer.WPF.Models
         }
         public int PhotoCount { get; set; }
         public int TotalPhotoCount { get; set; }
+        public long PhotoSize { get; set; }
+        public long TotalPhotoSize { get; set; }
         public List<DirectoryNode> Children { get; set; } = new();
 
         /// <summary>
         /// 显示文本：名称 + 照片数量
         /// </summary>
         public string IconText => IsMediaFile ? (IsVideo ? "▷" : "▧") : "▱";
-        public string DisplayText => IsMediaFile ? Name : $"{Name} ({TotalPhotoCount:N0})";
+        public string DisplayText => IsMediaFile
+            ? Name
+            : $"{Name} ({TotalPhotoCount:N0} · {FormatBytes(TotalPhotoSize)})";
         public string ToolTipText => IsMediaFile
             ? $"{FullPath}\n{(IsVideo ? "视频" : "照片")}"
             : TotalPhotoCount == PhotoCount
-                ? $"{FullPath}\n共 {TotalPhotoCount:N0} 个媒体文件"
-                : $"{FullPath}\n共 {TotalPhotoCount:N0} 个媒体文件，其中本层 {PhotoCount:N0} 个";
+                ? $"{FullPath}\n共 {TotalPhotoCount:N0} 个媒体文件，占用 {FormatBytes(TotalPhotoSize)}"
+                : $"{FullPath}\n共 {TotalPhotoCount:N0} 个媒体文件，其中本层 {PhotoCount:N0} 个；分支占用 {FormatBytes(TotalPhotoSize)}，本层占用 {FormatBytes(PhotoSize)}";
 
         public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -50,6 +54,14 @@ namespace LivePhotoViewer.WPF.Models
             if (field == value) return;
             field = value;
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        }
+
+        private static string FormatBytes(long bytes)
+        {
+            if (bytes < 1024) return $"{bytes} B";
+            if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
+            if (bytes < 1024L * 1024 * 1024) return $"{bytes / (1024.0 * 1024):F1} MB";
+            return $"{bytes / (1024.0 * 1024 * 1024):F2} GB";
         }
     }
 }

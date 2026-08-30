@@ -303,7 +303,7 @@ struct ContentView: View {
                 : Color.clear
         )
         .gesture(
-            DragGesture(minimumDistance: 1)
+            DragGesture(minimumDistance: 1, coordinateSpace: .global)
                 .onChanged { value in
                     if sidebarResizeStartWidth == nil {
                         sidebarResizeStartWidth = visibleSidebarWidth
@@ -311,11 +311,12 @@ struct ContentView: View {
                         NSCursor.resizeLeftRight.set()
                     }
                     let startWidth = sidebarResizeStartWidth ?? visibleSidebarWidth
+                    let horizontalTranslation = value.location.x - value.startLocation.x
                     var transaction = Transaction()
                     transaction.animation = nil
                     withTransaction(transaction) {
                         visibleSidebarWidth = clampedSidebarWidth(
-                            startWidth + Double(value.translation.width),
+                            startWidth + Double(horizontalTranslation),
                             maximumWidth: maximumWidth
                         )
                     }
@@ -620,6 +621,9 @@ struct ContentView: View {
         let isSelected = library.browsingFolder?.standardizedFileURL.path == directory.id
         let directCount = library.directPhotoCount(in: directory)
         let totalCount = library.descendantPhotoCount(in: directory)
+        let directSize = library.directPhotoSize(in: directory)
+        let totalSize = library.descendantPhotoSize(in: directory)
+        let compactSize = ByteCountFormatter.string(fromByteCount: totalSize, countStyle: .file)
 
         return HStack(spacing: 3) {
             Button {
@@ -659,9 +663,11 @@ struct ContentView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 4)
-                    Text(totalCount.formatted())
+                    Text("\(totalCount.formatted()) · \(compactSize)")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .layoutPriority(1)
                 }
                 .padding(.horizontal, 7)
                 .frame(maxWidth: .infinity, minHeight: 28)
@@ -675,8 +681,8 @@ struct ContentView: View {
             .frame(maxWidth: .infinity)
             .help(
                 totalCount == directCount
-                    ? "\(directory.url.path)\n共 \(totalCount) 个媒体文件"
-                    : "\(directory.url.path)\n共 \(totalCount) 个媒体文件，其中本层 \(directCount) 个"
+                    ? "\(directory.url.path)\n共 \(totalCount) 个媒体文件，占用 \(compactSize)"
+                    : "\(directory.url.path)\n共 \(totalCount) 个媒体文件，其中本层 \(directCount) 个；分支占用 \(compactSize)，本层占用 \(ByteCountFormatter.string(fromByteCount: directSize, countStyle: .file))"
             )
         }
         .padding(.leading, min(CGFloat(depth) * 12, 72))

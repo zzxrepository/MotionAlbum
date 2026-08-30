@@ -58,6 +58,7 @@ final class PhotoItem: ObservableObject, Identifiable {
     let companionVideoURL: URL?
     let fileName: String
     let fileSize: Int64
+    let originalResourceFileSize: Int64
     let modifiedAt: Date
     let cacheKey: String
     let selectionKey: String
@@ -83,6 +84,7 @@ final class PhotoItem: ObservableObject, Identifiable {
         companionVideoURL = descriptor.companionVideoURL
         fileName = descriptor.url.lastPathComponent
         fileSize = descriptor.fileSize
+        originalResourceFileSize = descriptor.fileSize + (descriptor.companionVideoFileSize ?? 0)
         modifiedAt = descriptor.modifiedAt
         cacheKey = descriptor.cacheKey
         self.selectionKey = selectionKey

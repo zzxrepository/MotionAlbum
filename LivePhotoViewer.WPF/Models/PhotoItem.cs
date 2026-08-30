@@ -38,6 +38,7 @@ namespace LivePhotoViewer.WPF.Models
         public int Width { get; set; }
         public int Height { get; set; }
         public long FileSize { get; set; }
+        public long OriginalResourceFileSize { get; set; }
         public DateTime ModifiedAt { get; set; }
         public DateTime TimelineDate { get; set; }
         public DateTime? CapturedAt { get; set; }

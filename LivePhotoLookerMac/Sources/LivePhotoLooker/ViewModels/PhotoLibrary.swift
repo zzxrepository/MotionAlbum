@@ -85,6 +85,8 @@ final class PhotoLibrary: ObservableObject {
     private var directPhotosByPath: [String: [PhotoItem]] = [:]
     private var directPhotoCountsByPath: [String: Int] = [:]
     private var descendantPhotoCountsByPath: [String: Int] = [:]
+    private var directPhotoSizesByPath: [String: Int64] = [:]
+    private var descendantPhotoSizesByPath: [String: Int64] = [:]
 
     init() {
         refreshRecentFolders()
@@ -241,6 +243,8 @@ final class PhotoLibrary: ObservableObject {
         directPhotosByPath = [:]
         directPhotoCountsByPath = [:]
         descendantPhotoCountsByPath = [:]
+        directPhotoSizesByPath = [:]
+        descendantPhotoSizesByPath = [:]
         photos = []
         photoIDSet = []
         selectedTag = nil
@@ -469,6 +473,14 @@ final class PhotoLibrary: ObservableObject {
 
     func descendantPhotoCount(in directory: PhotoDirectory) -> Int {
         descendantPhotoCountsByPath[directory.id] ?? 0
+    }
+
+    func directPhotoSize(in directory: PhotoDirectory) -> Int64 {
+        directPhotoSizesByPath[directory.id] ?? 0
+    }
+
+    func descendantPhotoSize(in directory: PhotoDirectory) -> Int64 {
+        descendantPhotoSizesByPath[directory.id] ?? 0
     }
 
     func setStatus(_ message: String) {
@@ -739,16 +751,20 @@ final class PhotoLibrary: ObservableObject {
         var directPhotos: [String: [PhotoItem]] = [:]
         var directCounts: [String: Int] = [:]
         var descendantCounts: [String: Int] = [:]
+        var directSizes: [String: Int64] = [:]
+        var descendantSizes: [String: Int64] = [:]
 
         for item in photos {
             var directory = item.url.deletingLastPathComponent().standardizedFileURL
             guard Self.isPath(directory.path, equalToOrDescendantOf: rootPath) else { continue }
             directPhotos[directory.path, default: []].append(item)
             directCounts[directory.path, default: 0] += 1
+            directSizes[directory.path, default: 0] += item.originalResourceFileSize
 
             while Self.isPath(directory.path, equalToOrDescendantOf: rootPath) {
                 let path = directory.path
                 descendantCounts[path, default: 0] += 1
+                descendantSizes[path, default: 0] += item.originalResourceFileSize
                 if directoriesByPath[path] == nil {
                     let parent = directory.deletingLastPathComponent().standardizedFileURL
                     directoriesByPath[path] = PhotoDirectory(
@@ -788,6 +804,8 @@ final class PhotoLibrary: ObservableObject {
         directPhotosByPath = directPhotos
         directPhotoCountsByPath = directCounts
         descendantPhotoCountsByPath = descendantCounts
+        directPhotoSizesByPath = directSizes
+        descendantPhotoSizesByPath = descendantSizes
 
         if let browsingFolder,
            directoriesByPath[browsingFolder.standardizedFileURL.path] == nil {
