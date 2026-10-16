@@ -21,7 +21,7 @@ final class LiveStatusCache {
     }
 
     func set(_ status: LivePhotoStatus, for key: String) {
-        queue.async {
+        queue.async { [self] in
             self.values[key] = status
             self.pendingSave?.cancel()
             let work = DispatchWorkItem { [weak self] in self?.saveNow() }

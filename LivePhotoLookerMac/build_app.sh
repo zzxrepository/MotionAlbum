@@ -8,6 +8,14 @@ export CLANG_MODULE_CACHE_PATH="$SCRIPT_DIR/.build/clang-module-cache"
 export SWIFTPM_CACHE_PATH="$SCRIPT_DIR/.build/swiftpm-cache"
 mkdir -p "$CLANG_MODULE_CACHE_PATH" "$SWIFTPM_CACHE_PATH"
 
+# 某些 Command Line Tools 预览版自带 macOS 27 SDK，却缺少 SwiftUI 宏插件。
+# 在没有完整 Xcode 时自动回退到同一套 CLT 内可正常编译 SwiftUI 的 26.5 SDK。
+if [[ -z "${SDKROOT:-}" \
+   && ! -f /Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/libSwiftUIMacros.dylib \
+   && -d /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk ]]; then
+    export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+fi
+
 swift run --disable-sandbox MotionAlbum --self-test
 swift build --disable-sandbox -c release
 

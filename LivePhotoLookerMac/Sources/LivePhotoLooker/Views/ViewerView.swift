@@ -14,6 +14,7 @@ struct ViewerView: View {
     let onRemoveTag: (String) -> Void
     let onSetHoldFrame: (Double?) -> Void
     let onTrash: () -> Void
+    let onDidSaveRotation: (URL) -> Void
     let isLibraryBusy: Bool
 
     @State private var previewImage: NSImage?
@@ -38,6 +39,9 @@ struct ViewerView: View {
     @State private var coverFrameErrorMessage: String?
     @State private var zoomScale = 1.0
     @State private var gestureBaseZoom = 1.0
+    @State private var rotationQuarterTurns = 0
+    @State private var showRotationSaveOptions = false
+    @State private var isSavingRotation = false
 
     private let minimumZoom = 0.5
     private let maximumZoom = 5.0
@@ -63,6 +67,7 @@ struct ViewerView: View {
             originalPreviewImage = nil
             errorMessage = nil
             tagInput = ""
+            rotationQuarterTurns = 0
             resetZoom()
             resolvePlaceNameIfNeeded()
             autoPlayIfNeeded()
@@ -112,13 +117,34 @@ struct ViewerView: View {
             coverPreviewTask = nil
             stopVideo()
         }
-        .alert("无法播放媒体", isPresented: Binding(
+        .alert("操作失败", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
         )) {
             Button("好", role: .cancel) { errorMessage = nil }
         } message: {
             Text(errorMessage ?? "未知错误")
+        }
+        .confirmationDialog(
+            "保存旋转后的图片",
+            isPresented: $showRotationSaveOptions,
+            titleVisibility: .visible
+        ) {
+            if protectsMotionResources == false {
+                Button("覆盖原图", role: .destructive) {
+                    saveRotation(overwriteOriginal: true)
+                }
+            }
+            Button(protectsMotionResources ? "另存为静态副本…" : "另存为…") {
+                saveRotation(overwriteOriginal: false)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            if protectsMotionResources {
+                Text("这是实况或可能包含动态资源的照片。为避免破坏内嵌视频或配套 MOV，只能另存为静态副本；原始实况照片不会被修改。")
+            } else {
+                Text("覆盖会直接改写磁盘上的原图；另存为会保留原文件。")
+            }
         }
     }
 
@@ -157,16 +183,32 @@ struct ViewerView: View {
     }
 
     private func zoomableImage(_ image: NSImage, viewportSize: CGSize) -> some View {
-        ScrollView([.horizontal, .vertical], showsIndicators: zoomScale > 1.01) {
+        let normalizedTurns = ((rotationQuarterTurns % 4) + 4) % 4
+        let sourceWidth = max(1, image.size.width)
+        let sourceHeight = max(1, image.size.height)
+        let swapsDimensions = normalizedTurns.isMultiple(of: 2) == false
+        let rotatedWidth = swapsDimensions ? sourceHeight : sourceWidth
+        let rotatedHeight = swapsDimensions ? sourceWidth : sourceHeight
+        let fitScale = min(
+            viewportSize.width / rotatedWidth,
+            viewportSize.height / rotatedHeight
+        )
+        let fittedSourceWidth = sourceWidth * fitScale
+        let fittedSourceHeight = sourceHeight * fitScale
+        let fittedRotatedWidth = rotatedWidth * fitScale
+        let fittedRotatedHeight = rotatedHeight * fitScale
+
+        return ScrollView([.horizontal, .vertical], showsIndicators: zoomScale > 1.01) {
             Image(nsImage: image)
                 .resizable()
                 .interpolation(.high)
-                .aspectRatio(contentMode: .fit)
-                .frame(width: viewportSize.width, height: viewportSize.height)
+                .frame(width: fittedSourceWidth, height: fittedSourceHeight)
+                .rotationEffect(.degrees(Double(rotationQuarterTurns * 90)))
+                .frame(width: fittedRotatedWidth, height: fittedRotatedHeight)
                 .scaleEffect(zoomScale)
                 .frame(
-                    width: max(viewportSize.width, viewportSize.width * zoomScale),
-                    height: max(viewportSize.height, viewportSize.height * zoomScale)
+                    width: max(viewportSize.width, fittedRotatedWidth * zoomScale),
+                    height: max(viewportSize.height, fittedRotatedHeight * zoomScale)
                 )
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2, perform: resetZoom)
@@ -491,6 +533,32 @@ struct ViewerView: View {
             .disabled(canZoomImage == false || abs(zoomScale - 1) < 0.001)
             .keyboardShortcut("0", modifiers: .command)
 
+            Divider().frame(height: 20)
+
+            Button {
+                rotatePreview(by: -1)
+            } label: {
+                Image(systemName: "rotate.left")
+            }
+            .disabled(canRotateImage == false || isSavingRotation || isLibraryBusy)
+            .help("向左旋转")
+
+            Button {
+                rotatePreview(by: 1)
+            } label: {
+                Image(systemName: "rotate.right")
+            }
+            .disabled(canRotateImage == false || isSavingRotation || isLibraryBusy)
+            .help("向右旋转")
+
+            Button {
+                showRotationSaveOptions = true
+            } label: {
+                Image(systemName: isSavingRotation ? "hourglass" : "square.and.arrow.down")
+            }
+            .disabled(hasPendingRotation == false || isSavingRotation || isLibraryBusy)
+            .help(isSavingRotation ? "正在保存" : "保存旋转结果")
+
             Button(action: onToggleSelection) {
                 Label(
                     item.isSelected ? "取消喜欢" : "加入我喜欢",
@@ -539,6 +607,22 @@ struct ViewerView: View {
         previewImage != nil && showingVideo == false && isEditingCoverFrame == false
     }
 
+    private var canRotateImage: Bool {
+        item.mediaKind == .image
+            && previewImage != nil
+            && showingVideo == false
+            && isEditingCoverFrame == false
+    }
+
+    private var hasPendingRotation: Bool {
+        ((rotationQuarterTurns % 4) + 4) % 4 != 0
+    }
+
+    private var protectsMotionResources: Bool {
+        item.mediaKind == .image
+            && (item.companionVideoURL != nil || item.liveStatus != .still)
+    }
+
     private var videoToggleTitle: String {
         if showingVideo {
             return item.mediaKind == .video ? "显示封面" : "显示照片"
@@ -556,6 +640,64 @@ struct ViewerView: View {
 
     private func resetZoom() {
         setZoom(1)
+    }
+
+    private func rotatePreview(by turns: Int) {
+        guard canRotateImage else { return }
+        stopVideo()
+        rotationQuarterTurns = (rotationQuarterTurns + turns) % 4
+        resetZoom()
+    }
+
+    private func saveRotation(overwriteOriginal: Bool) {
+        guard hasPendingRotation, !isSavingRotation else { return }
+        if overwriteOriginal && protectsMotionResources {
+            errorMessage = "实况照片不能直接覆盖。请另存为静态副本，以免破坏动态视频。"
+            return
+        }
+
+        let destinationURL: URL
+        if overwriteOriginal {
+            destinationURL = item.url
+        } else {
+            let panel = NSSavePanel()
+            panel.title = protectsMotionResources ? "另存为旋转后的静态副本" : "另存为旋转后的图片"
+            panel.prompt = "保存"
+            panel.directoryURL = item.url.deletingLastPathComponent()
+            let baseName = item.url.deletingPathExtension().lastPathComponent
+            panel.nameFieldStringValue = "\(baseName)_已旋转.\(item.url.pathExtension)"
+            panel.canCreateDirectories = true
+            guard panel.runModal() == .OK, let selectedURL = panel.url else { return }
+            guard selectedURL.standardizedFileURL != item.url.standardizedFileURL else {
+                errorMessage = protectsMotionResources
+                    ? "实况照片不能用静态副本覆盖原文件，请换一个文件名。"
+                    : "如需改写原图，请使用“覆盖原图”；另存为需要使用不同的文件名。"
+                return
+            }
+            destinationURL = selectedURL
+        }
+
+        let sourceURL = item.url
+        let turns = rotationQuarterTurns
+        isSavingRotation = true
+        Task { @MainActor in
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try ImageRotationService.saveRotatedImage(
+                        sourceURL: sourceURL,
+                        destinationURL: destinationURL,
+                        clockwiseQuarterTurns: turns,
+                        overwriteOriginal: overwriteOriginal
+                    )
+                }.value
+                rotationQuarterTurns = 0
+                onDidSaveRotation(destinationURL)
+            } catch {
+                errorMessage = "保存旋转结果失败：\(error.localizedDescription)"
+                AppLogger.error("保存旋转图片失败：\(sourceURL.path)", error: error)
+            }
+            isSavingRotation = false
+        }
     }
 
     private func setZoom(_ scale: Double) {

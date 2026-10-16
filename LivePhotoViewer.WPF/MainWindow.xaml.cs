@@ -25,6 +25,7 @@ namespace LivePhotoViewer.WPF
     public partial class MainWindow : Window
     {
         private enum LibraryFilter { All, Live, Video, Favorite }
+        private enum RotationSaveChoice { Cancel, SaveAs, Overwrite }
 
         private readonly FavoritesManager _favoriteStore = new();
         private readonly TagsManager _tagStore = new();
@@ -41,6 +42,7 @@ namespace LivePhotoViewer.WPF
 
         private List<PhotoItem> _photos = new();
         private List<PhotoItem> _visiblePhotos = new();
+        private List<string> _directories = new();
         private CancellationTokenSource? _loadCts;
         private CancellationTokenSource? _showcasePreviewCts;
         private string _currentDirectory = string.Empty;
@@ -80,6 +82,7 @@ namespace LivePhotoViewer.WPF
         private DateTime _lastViewerClick;
         private Point _lastViewerClickPosition;
         private double _viewerManipulationBaseScale;
+        private int _viewerRotationQuarterTurns;
 
         public MainWindow()
         {
@@ -158,7 +161,8 @@ namespace LivePhotoViewer.WPF
 
         private void BtnRefresh_Click(object sender, RoutedEventArgs e)
         {
-            if (Directory.Exists(_currentDirectory)) _ = OpenDirectoryAsync(_currentDirectory, remember: false);
+            if (Directory.Exists(_currentDirectory))
+                _ = OpenDirectoryAsync(_currentDirectory, remember: false, browsingDirectory: _browsingDirectory);
         }
 
         private void IncludeSubfoldersCheckBox_Click(object sender, RoutedEventArgs e)
@@ -191,6 +195,388 @@ namespace LivePhotoViewer.WPF
             SetStatus(CurrentScopeSummary());
         }
 
+        private void BtnNewFolder_Click(object sender, RoutedEventArgs e)
+        {
+            if (!Directory.Exists(_currentDirectory) || _isWorking) return;
+            string parent = DirectoryTreeView.SelectedItem is DirectoryNode { IsMediaFile: false } selected
+                ? selected.FullPath
+                : Directory.Exists(_browsingDirectory) ? _browsingDirectory : _currentDirectory;
+            string? name = PromptForText(
+                "新建文件夹",
+                $"将在“{DirectoryName(parent)}”中创建文件夹。",
+                "新文件夹");
+            if (name == null) return;
+            name = name.Trim();
+            if (name.Length == 0 || name is "." or ".." || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            {
+                MessageBox.Show(this, "请输入有效的文件夹名称。", "无法新建文件夹", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            string destination = Path.Combine(parent, name);
+            if (Directory.Exists(destination) || File.Exists(destination))
+            {
+                MessageBox.Show(this, $"目标位置已经存在“{name}”。", "无法新建文件夹", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            try
+            {
+                Directory.CreateDirectory(destination);
+                SetStatus($"已新建文件夹：{name}");
+                _ = OpenDirectoryAsync(_currentDirectory, remember: false, browsingDirectory: parent);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "无法新建文件夹", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void BtnCollapseAll_Click(object sender, RoutedEventArgs e)
+        {
+            if (DirectoryTreeView.ItemsSource is not IEnumerable<DirectoryNode> roots) return;
+            foreach (DirectoryNode root in roots) CollapseDirectoryNode(root);
+            SetStatus("已收起全部目录");
+        }
+
+        private static void CollapseDirectoryNode(DirectoryNode node)
+        {
+            node.IsExpanded = false;
+            foreach (DirectoryNode child in node.Children.Where(child => !child.IsMediaFile))
+                CollapseDirectoryNode(child);
+        }
+
+        private void DirectoryTreeView_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (FindVisualParent<TreeViewItem>(e.OriginalSource as DependencyObject) is { } treeItem)
+            {
+                treeItem.IsSelected = true;
+                treeItem.Focus();
+            }
+        }
+
+        private void DirectoryTreeView_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+        {
+            if (DirectoryTreeView.SelectedItem is not DirectoryNode node)
+            {
+                e.Handled = true;
+                return;
+            }
+
+            ContextMenu menu = DirectoryTreeView.ContextMenu ?? new ContextMenu();
+            menu.Items.Clear();
+            if (!node.IsMediaFile)
+            {
+                var create = new MenuItem { Header = "新建子文件夹…" };
+                create.Click += BtnNewFolder_Click;
+                menu.Items.Add(create);
+
+                if (!string.Equals(NormalizeDirectoryPath(node.FullPath), NormalizeDirectoryPath(_currentDirectory), StringComparison.OrdinalIgnoreCase))
+                {
+                    var moveFolder = new MenuItem { Header = "移动文件夹到…" };
+                    moveFolder.Click += async (_, _) => await MoveDirectoryNodeAsync(node);
+                    menu.Items.Add(moveFolder);
+                }
+            }
+            else
+            {
+                var open = new MenuItem { Header = "查看" };
+                open.Click += (_, _) => FocusDirectoryTreeMedia(node);
+                menu.Items.Add(open);
+                var moveFile = new MenuItem { Header = "移动到…" };
+                moveFile.Click += async (_, _) => await MoveMediaNodeAsync(node);
+                menu.Items.Add(moveFile);
+            }
+
+            menu.Items.Add(new Separator());
+            var reveal = new MenuItem { Header = "在文件资源管理器中显示" };
+            reveal.Click += (_, _) => RevealPath(node.FullPath);
+            menu.Items.Add(reveal);
+            var refresh = new MenuItem { Header = "刷新" };
+            refresh.Click += BtnRefresh_Click;
+            menu.Items.Add(refresh);
+            var collapse = new MenuItem { Header = "全部收起" };
+            collapse.Click += BtnCollapseAll_Click;
+            menu.Items.Add(collapse);
+            DirectoryTreeView.ContextMenu = menu;
+        }
+
+        private async Task MoveMediaNodeAsync(DirectoryNode node)
+        {
+            PhotoItem? photo = _photos.FirstOrDefault(item =>
+                string.Equals(item.StableId, node.MediaStableId, StringComparison.OrdinalIgnoreCase));
+            if (photo == null) return;
+            string? destination = ChooseDestinationFolder($"移动“{photo.FileName}”");
+            if (destination == null || !ConfirmMove(photo.FileName, destination)) return;
+            try
+            {
+                MovePhotoResources(photo, destination);
+                MigratePhotoState(photo, destination, Path.Combine(destination, photo.FileName));
+                SetStatus($"已移动：{photo.FileName} → {DirectoryName(destination)}");
+                await OpenDirectoryAsync(_currentDirectory, remember: false, browsingDirectory: destination);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "无法移动照片", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private async Task MoveDirectoryNodeAsync(DirectoryNode node)
+        {
+            string source = NormalizeDirectoryPath(node.FullPath);
+            string? destinationDirectory = ChooseDestinationFolder($"移动文件夹“{node.Name}”");
+            if (destinationDirectory == null || !ConfirmMove(node.Name, destinationDirectory)) return;
+            try
+            {
+                destinationDirectory = NormalizeDirectoryPath(destinationDirectory);
+                if (!IsSameOrDescendant(destinationDirectory, _currentDirectory))
+                    throw new InvalidOperationException("目标位置必须位于当前打开的图库根目录内。");
+                if (IsSameOrDescendant(destinationDirectory, source))
+                    throw new InvalidOperationException("不能把文件夹移动到它自己或它的子目录中。");
+                string destination = Path.Combine(destinationDirectory, Path.GetFileName(source));
+                if (Directory.Exists(destination) || File.Exists(destination))
+                    throw new IOException($"目标位置已经存在“{Path.GetFileName(source)}”。");
+
+                List<PhotoItem> affected = _photos.Where(photo => IsSameOrDescendant(photo.Directory, source)).ToList();
+                Directory.Move(source, destination);
+                foreach (PhotoItem photo in affected)
+                {
+                    string relativeDirectory = Path.GetRelativePath(source, photo.Directory);
+                    string newDirectory = relativeDirectory == "."
+                        ? destination
+                        : Path.Combine(destination, relativeDirectory);
+                    string newPath = Path.Combine(newDirectory, photo.FileName);
+                    MigratePhotoState(photo, newDirectory, newPath);
+                }
+                SetStatus($"已移动文件夹：{node.Name} → {DirectoryName(destinationDirectory)}");
+                await OpenDirectoryAsync(_currentDirectory, remember: false, browsingDirectory: destination);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "无法移动文件夹", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private string? ChooseDestinationFolder(string title)
+        {
+            var dialog = new OpenFolderDialog
+            {
+                Title = title,
+                InitialDirectory = Directory.Exists(_browsingDirectory) ? _browsingDirectory : _currentDirectory
+            };
+            if (dialog.ShowDialog() != true) return null;
+            string destination = NormalizeDirectoryPath(dialog.FolderName);
+            if (!IsSameOrDescendant(destination, _currentDirectory))
+            {
+                MessageBox.Show(this, "目标位置必须位于当前打开的图库根目录内。", "不能移动", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return null;
+            }
+            return destination;
+        }
+
+        private bool ConfirmMove(string name, string destination) =>
+            MessageBox.Show(
+                this,
+                $"把“{name}”移动到：\n{destination}",
+                "确认移动",
+                MessageBoxButton.OKCancel,
+                MessageBoxImage.Question) == MessageBoxResult.OK;
+
+        private static void MovePhotoResources(PhotoItem photo, string destinationDirectory)
+        {
+            var moved = new List<(string Source, string Destination)>();
+            try
+            {
+                foreach (string source in photo.OriginalResourcePaths)
+                {
+                    string destination = Path.Combine(destinationDirectory, Path.GetFileName(source));
+                    if (string.Equals(Path.GetFullPath(source), Path.GetFullPath(destination), StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException("文件已经位于所选目录中。");
+                    if (File.Exists(destination) || Directory.Exists(destination))
+                        throw new IOException($"目标位置已经存在“{Path.GetFileName(source)}”。");
+                    File.Move(source, destination);
+                    moved.Add((source, destination));
+                }
+            }
+            catch
+            {
+                foreach (var pair in moved.AsEnumerable().Reverse())
+                {
+                    try { if (File.Exists(pair.Destination)) File.Move(pair.Destination, pair.Source); } catch { }
+                }
+                throw;
+            }
+        }
+
+        private void MigratePhotoState(PhotoItem photo, string newDirectory, string newPath)
+        {
+            _favoriteStore.SetFavorite(newDirectory, photo.FileName, photo.IsFavorite);
+            _favoriteStore.SetFavorite(photo.Directory, photo.FileName, false);
+            foreach (string tag in photo.Tags) _tagStore.AddTag(newDirectory, photo.FileName, tag);
+            _tagStore.RemoveAll(photo.Directory, photo.FileName);
+            _holdFrameStore.Set(newPath, photo.HoldFrameTime);
+            _holdFrameStore.Remove(photo.FilePath);
+        }
+
+        private static T? FindVisualParent<T>(DependencyObject? child) where T : DependencyObject
+        {
+            while (child != null)
+            {
+                if (child is T match) return match;
+                child = VisualTreeHelper.GetParent(child);
+            }
+            return null;
+        }
+
+        private void RevealPath(string path)
+        {
+            try
+            {
+                var startInfo = new ProcessStartInfo("explorer.exe") { UseShellExecute = true };
+                if (Directory.Exists(path))
+                    startInfo.ArgumentList.Add(path);
+                else
+                    startInfo.ArgumentList.Add($"/select,{path}");
+                Process.Start(startInfo);
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"无法在文件资源管理器中显示：{ex.Message}");
+            }
+        }
+
+        private string? PromptForText(string title, string message, string initialValue)
+        {
+            var input = new TextBox
+            {
+                Text = initialValue,
+                MinWidth = 320,
+                Margin = new Thickness(0, 8, 0, 14),
+                Padding = new Thickness(7, 5)
+            };
+            var accept = new Button
+            {
+                Content = "创建",
+                IsDefault = true,
+                MinWidth = 76,
+                Margin = new Thickness(0, 0, 6, 0),
+                Style = (Style)FindResource("FlatButtonStyle")
+            };
+            var cancel = new Button
+            {
+                Content = "取消",
+                IsCancel = true,
+                MinWidth = 76,
+                Style = (Style)FindResource("FlatButtonStyle")
+            };
+            var buttons = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right
+            };
+            buttons.Children.Add(accept);
+            buttons.Children.Add(cancel);
+            var content = new StackPanel { Margin = new Thickness(18) };
+            content.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap });
+            content.Children.Add(input);
+            content.Children.Add(buttons);
+            var dialog = new Window
+            {
+                Title = title,
+                Owner = this,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                SizeToContent = SizeToContent.WidthAndHeight,
+                ResizeMode = ResizeMode.NoResize,
+                Content = content,
+                Background = (Brush)FindResource("CardBgBrush"),
+                Foreground = (Brush)FindResource("TextBrush")
+            };
+            accept.Click += (_, _) => dialog.DialogResult = true;
+            dialog.Loaded += (_, _) =>
+            {
+                input.Focus();
+                input.SelectAll();
+            };
+            return dialog.ShowDialog() == true ? input.Text : null;
+        }
+
+        private RotationSaveChoice ShowRotationSaveChoice(bool protectsMotion, bool canOverwrite)
+        {
+            RotationSaveChoice choice = RotationSaveChoice.Cancel;
+            var message = new TextBlock
+            {
+                Text = protectsMotion
+                    ? "这是实况或可能包含动态资源的照片。为避免破坏内嵌视频或配套 MOV，只能另存为静态副本；原始实况照片不会被修改。"
+                    : canOverwrite
+                        ? "覆盖会直接改写磁盘上的原图；另存为会保留原文件。"
+                        : "Windows 当前不能直接写回这种图片格式，请另存为 JPG、PNG、BMP 或 TIFF。",
+                TextWrapping = TextWrapping.Wrap,
+                MaxWidth = 440,
+                Margin = new Thickness(0, 0, 0, 16)
+            };
+            var buttons = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right
+            };
+            var saveAs = new Button
+            {
+                Content = protectsMotion ? "另存为静态副本…" : "另存为…",
+                IsDefault = true,
+                MinWidth = 112,
+                Margin = new Thickness(0, 0, 6, 0),
+                Style = (Style)FindResource("FlatButtonStyle")
+            };
+            buttons.Children.Add(saveAs);
+            Button? overwrite = null;
+            if (canOverwrite)
+            {
+                overwrite = new Button
+                {
+                    Content = "覆盖原图",
+                    MinWidth = 92,
+                    Margin = new Thickness(0, 0, 6, 0),
+                    Style = (Style)FindResource("FlatButtonStyle")
+                };
+                buttons.Children.Add(overwrite);
+            }
+            var cancel = new Button
+            {
+                Content = "取消",
+                IsCancel = true,
+                MinWidth = 76,
+                Style = (Style)FindResource("FlatButtonStyle")
+            };
+            buttons.Children.Add(cancel);
+            var content = new StackPanel { Margin = new Thickness(18) };
+            content.Children.Add(message);
+            content.Children.Add(buttons);
+            var dialog = new Window
+            {
+                Title = "保存旋转后的图片",
+                Owner = this,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                SizeToContent = SizeToContent.WidthAndHeight,
+                ResizeMode = ResizeMode.NoResize,
+                Content = content,
+                Background = (Brush)FindResource("CardBgBrush"),
+                Foreground = (Brush)FindResource("TextBrush")
+            };
+            saveAs.Click += (_, _) =>
+            {
+                choice = RotationSaveChoice.SaveAs;
+                dialog.DialogResult = true;
+            };
+            if (overwrite != null)
+            {
+                overwrite.Click += (_, _) =>
+                {
+                    choice = RotationSaveChoice.Overwrite;
+                    dialog.DialogResult = true;
+                };
+            }
+            dialog.ShowDialog();
+            return choice;
+        }
+
         private void BtnRecentFolders_Click(object sender, RoutedEventArgs e)
         {
             _recentFolders.RemoveUnavailable();
@@ -214,7 +600,10 @@ namespace LivePhotoViewer.WPF
             menu.IsOpen = true;
         }
 
-        private async Task OpenDirectoryAsync(string path, bool remember = true)
+        private async Task OpenDirectoryAsync(
+            string path,
+            bool remember = true,
+            string? browsingDirectory = null)
         {
             if (!Directory.Exists(path))
             {
@@ -232,7 +621,13 @@ namespace LivePhotoViewer.WPF
                 GridMode.Visibility = Visibility.Visible;
             }
             _currentDirectory = NormalizeDirectoryPath(path);
-            _browsingDirectory = _currentDirectory;
+            string requestedBrowsingDirectory = string.IsNullOrWhiteSpace(browsingDirectory)
+                ? _currentDirectory
+                : NormalizeDirectoryPath(browsingDirectory);
+            _browsingDirectory = Directory.Exists(requestedBrowsingDirectory)
+                && IsSameOrDescendant(requestedBrowsingDirectory, _currentDirectory)
+                    ? requestedBrowsingDirectory
+                    : _currentDirectory;
             if (remember) _recentFolders.Add(_currentDirectory);
             _focusedPhotoId = null;
             _previousFocusedPhotoId = null;
@@ -241,15 +636,17 @@ namespace LivePhotoViewer.WPF
             _thumbnailMap.Clear();
             ThumbnailPanel.Children.Clear();
             CurrentPathText.Text = _currentDirectory;
-            LibraryPathText.Text = _currentDirectory;
+            LibraryPathText.Text = _browsingDirectory;
             SetStatus("正在扫描照片与视频…");
             SetWorking(true, 0, 1);
 
             try
             {
                 const bool recursively = true;
-                var files = await Task.Run(() => EnumerateMediaFiles(_currentDirectory, recursively, token), token);
+                var scan = await Task.Run(() => EnumerateLibrary(_currentDirectory, recursively, token), token);
                 token.ThrowIfCancellationRequested();
+                var files = scan.Files;
+                _directories = scan.Directories;
                 var imagePaths = files.Where(LivePhotoExtractor.IsSupportedImage).ToList();
                 var videoPaths = files.Where(LivePhotoExtractor.IsSupportedVideo).ToList();
                 var companions = await Task.Run(
@@ -327,15 +724,20 @@ namespace LivePhotoViewer.WPF
             };
         }
 
-        private static List<string> EnumerateMediaFiles(string root, bool recursively, CancellationToken token)
+        private static (List<string> Files, List<string> Directories) EnumerateLibrary(
+            string root,
+            bool recursively,
+            CancellationToken token)
         {
             var result = new List<string>();
+            var directories = new List<string>();
             var pending = new Stack<string>();
             pending.Push(root);
             while (pending.Count > 0)
             {
                 token.ThrowIfCancellationRequested();
                 string directory = pending.Pop();
+                directories.Add(NormalizeDirectoryPath(directory));
                 try
                 {
                     foreach (string file in Directory.EnumerateFiles(directory))
@@ -359,7 +761,7 @@ namespace LivePhotoViewer.WPF
                 }
                 catch { }
             }
-            return result;
+            return (result, directories);
         }
 
         private IEnumerable<PhotoItem> ScopedPhotos()
@@ -391,6 +793,17 @@ namespace LivePhotoViewer.WPF
                     FullPath = rootPath
                 }
             };
+
+            foreach (string discoveredDirectory in _directories)
+            {
+                string directory = NormalizeDirectoryPath(discoveredDirectory);
+                if (!IsSameOrDescendant(directory, rootPath) || nodes.ContainsKey(directory)) continue;
+                nodes[directory] = new DirectoryNode
+                {
+                    Name = DirectoryName(directory),
+                    FullPath = directory
+                };
+            }
 
             foreach (PhotoItem photo in _photos)
             {
@@ -700,6 +1113,7 @@ namespace LivePhotoViewer.WPF
                         card.PhotoFocused += OnThumbnailFocused;
                         card.PhotoOpened += OnThumbnailOpened;
                         card.FavoriteToggled += OnFavoriteToggled;
+                        card.MoveRequested += OnMoveRequested;
                         card.RevealRequested += OnRevealRequested;
                         card.TrashRequested += OnTrashRequested;
                         _cardMap[photo.StableId] = card;
@@ -844,6 +1258,20 @@ namespace LivePhotoViewer.WPF
                 Process.Start(startInfo);
             }
             catch (Exception ex) { SetStatus($"无法在资源管理器中显示：{ex.Message}"); }
+        }
+
+        private async void OnMoveRequested(object? sender, string filePath)
+        {
+            PhotoItem? photo = _photos.FirstOrDefault(item =>
+                string.Equals(item.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
+            if (photo == null) return;
+            await MoveMediaNodeAsync(new DirectoryNode
+            {
+                Name = photo.FileName,
+                FullPath = photo.FilePath,
+                IsMediaFile = true,
+                MediaStableId = photo.StableId
+            });
         }
 
         private async void OnTrashRequested(object? sender, string filePath)
@@ -1015,6 +1443,7 @@ namespace LivePhotoViewer.WPF
             PhotoItem photo = _visiblePhotos[index];
             _viewerIndex = index;
             SetFocusedPhoto(photo);
+            ResetViewerRotation();
             ResetViewerTransform();
 
             ViewerImage.Source = photo.IsVideo
@@ -1182,6 +1611,94 @@ namespace LivePhotoViewer.WPF
         private void ViewerZoomIn_Click(object sender, RoutedEventArgs e) => SetViewerScale(_viewerScale * 1.2);
         private void ViewerResetZoom_Click(object sender, RoutedEventArgs e) => ResetViewerTransform();
 
+        private void ViewerRotateLeft_Click(object sender, RoutedEventArgs e) => RotateViewer(-1);
+        private void ViewerRotateRight_Click(object sender, RoutedEventArgs e) => RotateViewer(1);
+
+        private void RotateViewer(int quarterTurns)
+        {
+            if (_isWorking) return;
+            if (_viewerIndex < 0 || _viewerIndex >= _visiblePhotos.Count) return;
+            PhotoItem photo = _visiblePhotos[_viewerIndex];
+            if (photo.IsVideo || ViewerVideoView.Visibility == Visibility.Visible) return;
+            _viewerRotationQuarterTurns = (_viewerRotationQuarterTurns + quarterTurns) % 4;
+            ViewerRotateTransform.Angle = _viewerRotationQuarterTurns * 90;
+            ResetViewerTransform();
+            UpdateViewerZoomControls();
+        }
+
+        private void ResetViewerRotation()
+        {
+            _viewerRotationQuarterTurns = 0;
+            if (IsLoaded) ViewerRotateTransform.Angle = 0;
+        }
+
+        private async void ViewerSaveRotation_Click(object sender, RoutedEventArgs e)
+        {
+            if (_isWorking) return;
+            if (_viewerIndex < 0 || _viewerIndex >= _visiblePhotos.Count) return;
+            int turns = ((_viewerRotationQuarterTurns % 4) + 4) % 4;
+            if (turns == 0) return;
+            PhotoItem photo = _visiblePhotos[_viewerIndex];
+            bool protectsMotion = photo.IsLivePhoto || !photo.IsLiveStatusKnown || !string.IsNullOrWhiteSpace(photo.CompanionVideoPath);
+            bool canOverwrite = !protectsMotion && ImageRotationService.CanWrite(photo.FilePath);
+            RotationSaveChoice choice = ShowRotationSaveChoice(protectsMotion, canOverwrite);
+            if (choice == RotationSaveChoice.Cancel) return;
+
+            bool overwrite = choice == RotationSaveChoice.Overwrite;
+            string destination = photo.FilePath;
+            if (!overwrite)
+            {
+                string sourceExtension = Path.GetExtension(photo.FilePath).ToLowerInvariant();
+                string extension = ImageRotationService.CanWrite(photo.FilePath) ? sourceExtension : ".jpg";
+                var saveDialog = new SaveFileDialog
+                {
+                    Title = protectsMotion ? "另存为旋转后的静态副本" : "另存为旋转后的图片",
+                    InitialDirectory = photo.Directory,
+                    FileName = $"{Path.GetFileNameWithoutExtension(photo.FileName)}_已旋转{extension}",
+                    DefaultExt = extension,
+                    AddExtension = true,
+                    Filter = "JPEG 图片|*.jpg;*.jpeg|PNG 图片|*.png|TIFF 图片|*.tif;*.tiff|BMP 图片|*.bmp"
+                };
+                if (saveDialog.ShowDialog(this) != true) return;
+                destination = saveDialog.FileName;
+                if (string.Equals(Path.GetFullPath(destination), Path.GetFullPath(photo.FilePath), StringComparison.OrdinalIgnoreCase))
+                {
+                    string warning = protectsMotion
+                        ? "实况照片不能用静态副本覆盖原文件，请换一个文件名。"
+                        : "如需改写原图，请使用“覆盖原图”；另存为需要使用不同的文件名。";
+                    MessageBox.Show(this, warning, "请选择其他文件名", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+            }
+
+            try
+            {
+                SetWorking(true);
+                BtnViewerSaveRotation.Content = "…";
+                await Task.Run(() => ImageRotationService.SaveRotated(
+                    photo.FilePath,
+                    destination,
+                    turns,
+                    overwrite));
+                ResetViewerRotation();
+                string savedDirectory = Path.GetDirectoryName(destination) ?? photo.Directory;
+                string browseAfterSave = IsSameOrDescendant(savedDirectory, _currentDirectory)
+                    ? savedDirectory
+                    : photo.Directory;
+                await OpenDirectoryAsync(_currentDirectory, remember: false, browsingDirectory: browseAfterSave);
+                MessageBox.Show(this, $"旋转后的图片已保存：\n{destination}", "保存完成", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "保存旋转结果失败", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                BtnViewerSaveRotation.Content = "▣";
+                SetWorking(false);
+            }
+        }
+
         private void SetViewerScale(double scale)
         {
             if (ViewerVideoView.Visibility == Visibility.Visible) return;
@@ -1216,6 +1733,10 @@ namespace LivePhotoViewer.WPF
             BtnViewerZoomOut.IsEnabled = canZoom && _viewerScale > 0.101;
             BtnViewerZoomIn.IsEnabled = canZoom && _viewerScale < 4.999;
             BtnViewerZoomPercent.IsEnabled = canZoom && Math.Abs(_viewerScale - 1) > 0.001;
+            bool canRotate = canZoom && _viewerIndex >= 0 && _viewerIndex < _visiblePhotos.Count && !_visiblePhotos[_viewerIndex].IsVideo;
+            BtnViewerRotateLeft.IsEnabled = canRotate;
+            BtnViewerRotateRight.IsEnabled = canRotate;
+            BtnViewerSaveRotation.IsEnabled = canRotate && ((_viewerRotationQuarterTurns % 4) + 4) % 4 != 0;
         }
 
         private void ViewerImageContainer_MouseWheel(object sender, MouseWheelEventArgs e)
@@ -1754,6 +2275,20 @@ namespace LivePhotoViewer.WPF
         private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
         {
             bool control = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+            bool shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
+            bool alt = (Keyboard.Modifiers & ModifierKeys.Alt) != 0;
+            if (control && shift && e.Key == Key.N)
+            {
+                BtnNewFolder_Click(sender, e);
+                e.Handled = true;
+                return;
+            }
+            if (control && alt && e.Key == Key.C)
+            {
+                BtnCollapseAll_Click(sender, e);
+                e.Handled = true;
+                return;
+            }
             if (control && e.Key == Key.B)
             {
                 BtnToggleSidebar_Click(sender, e);

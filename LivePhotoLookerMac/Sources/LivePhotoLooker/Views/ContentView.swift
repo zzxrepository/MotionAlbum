@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 private struct UserFacingAlert: Identifiable {
@@ -253,6 +254,15 @@ struct ContentView: View {
             resetViewerContext()
             library.chooseAndOpenFolder()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .createPhotoFolder)) { _ in
+            promptForNewFolder(in: selectedDirectoryURL)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .refreshPhotoFolder)) { _ in
+            refreshLibrary()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .collapsePhotoFolders)) { _ in
+            collapseAllDirectories()
+        }
         .onChange(of: library.currentFolder?.standardizedFileURL.path) { path in
             guard let path else {
                 expandedDirectoryPaths = []
@@ -427,7 +437,11 @@ struct ContentView: View {
 
             ScrollView {
                 VStack(spacing: 10) {
-                    sidebarBlock("资源管理器", systemImage: "folder") {
+                    sidebarBlock(
+                        "资源管理器",
+                        systemImage: "folder",
+                        headerActions: resourceExplorerHeaderActions
+                    ) {
                         Menu {
                             recentFolderMenuItems
                         } label: {
@@ -686,6 +700,44 @@ struct ContentView: View {
             )
         }
         .padding(.leading, min(CGFloat(depth) * 12, 72))
+        .contextMenu {
+            Button {
+                promptForNewFolder(in: directory.url)
+            } label: {
+                Label("新建子文件夹…", systemImage: "folder.badge.plus")
+            }
+            .disabled(isWorking)
+
+            if directory.parentPath != nil {
+                Button {
+                    chooseMoveDestination(for: directory)
+                } label: {
+                    Label("移动文件夹到…", systemImage: "folder.badge.arrow.forward")
+                }
+                .disabled(isWorking)
+            }
+
+            Divider()
+
+            Button {
+                library.revealInFinder(directory)
+            } label: {
+                Label("在访达中显示", systemImage: "finder")
+            }
+
+            Button {
+                refreshLibrary()
+            } label: {
+                Label("刷新", systemImage: "arrow.clockwise")
+            }
+            .disabled(library.isLoading || isWorking)
+
+            Button {
+                collapseAllDirectories()
+            } label: {
+                Label("全部收起", systemImage: "rectangle.compress.vertical")
+            }
+        }
     }
 
     private func directoryMediaRow(
@@ -722,6 +774,36 @@ struct ContentView: View {
         .help(item.url.path)
         .accessibilityLabel("媒体文件 \(item.fileName)")
         .accessibilityIdentifier("resource.media.\(item.id)")
+        .contextMenu {
+            Button {
+                openViewer(item)
+            } label: {
+                Label("查看", systemImage: "eye")
+            }
+            .disabled(isWorking)
+
+            Button {
+                chooseMoveDestination(for: item)
+            } label: {
+                Label("移动到…", systemImage: "folder.badge.arrow.forward")
+            }
+            .disabled(isWorking)
+
+            Divider()
+
+            Button {
+                library.revealInFinder(item)
+            } label: {
+                Label("在访达中显示", systemImage: "finder")
+            }
+
+            Button(role: .destructive) {
+                requestTrashItems([item], fallbackViewerItem: nil)
+            } label: {
+                Label("移入废纸篓", systemImage: "trash")
+            }
+            .disabled(isWorking)
+        }
     }
 
     private var brandHeader: some View {
@@ -775,8 +857,7 @@ struct ContentView: View {
                 Spacer()
                 if library.currentFolder != nil {
                     Button {
-                        resetViewerContext()
-                        library.reload()
+                        refreshLibrary()
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
@@ -817,12 +898,19 @@ struct ContentView: View {
     private func sidebarBlock<Content: View>(
         _ title: String,
         systemImage: String,
+        headerActions: AnyView? = nil,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label(title.uppercased(), systemImage: systemImage)
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Label(title.uppercased(), systemImage: systemImage)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                if let headerActions {
+                    headerActions
+                }
+            }
             content()
         }
         .padding(9)
@@ -835,6 +923,47 @@ struct ContentView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.white.opacity(0.16), lineWidth: 1)
         }
+    }
+
+    private var resourceExplorerHeaderActions: AnyView {
+        AnyView(
+            HStack(spacing: 2) {
+                compactExplorerButton(
+                    "新建文件夹（⇧⌘N）",
+                    systemImage: "folder.badge.plus"
+                ) {
+                    promptForNewFolder(in: selectedDirectoryURL)
+                }
+                compactExplorerButton(
+                    "刷新（⌘R）",
+                    systemImage: "arrow.clockwise"
+                ) {
+                    refreshLibrary()
+                }
+                compactExplorerButton(
+                    "全部收起（⌥⌘C）",
+                    systemImage: "rectangle.compress.vertical"
+                ) {
+                    collapseAllDirectories()
+                }
+            }
+        )
+    }
+
+    private func compactExplorerButton(
+        _ help: String,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(library.currentFolder == nil || library.isLoading || isWorking)
+        .help(help)
     }
 
     private func sidebarMenuLabel(_ title: String, systemImage: String) -> some View {
@@ -931,6 +1060,7 @@ struct ContentView: View {
                         onOpen: openViewer,
                         onToggleSelection: library.toggleSelection,
                         onReveal: library.revealInFinder,
+                        onMove: chooseMoveDestination,
                         onTrash: { requestTrashItems([$0], fallbackViewerItem: nil) },
                         onFocus: { setFocusedGalleryItem($0) },
                         isInteractionDisabled: isWorking,
@@ -1444,6 +1574,15 @@ struct ContentView: View {
             onRemoveTag: { library.removeTag($0, from: item) },
             onSetHoldFrame: { library.setHoldFrameTime($0, for: item) },
             onTrash: { requestTrashViewerItem(item) },
+            onDidSaveRotation: { destination in
+                viewerItem = nil
+                setFocusedGalleryItem(nil)
+                library.reload(selecting: item.url.deletingLastPathComponent())
+                alert = UserFacingAlert(
+                    title: "旋转后的图片已保存",
+                    message: destination.path
+                )
+            },
             isLibraryBusy: isWorking
         )
         .id(item.id)
@@ -1472,6 +1611,107 @@ struct ContentView: View {
             galleryThumbnailSizeRange.upperBound,
             max(galleryThumbnailSizeRange.lowerBound, size)
         )
+    }
+
+    private var selectedDirectoryURL: URL? {
+        library.browsingFolder ?? library.currentFolder
+    }
+
+    private func refreshLibrary() {
+        guard library.currentFolder != nil, !library.isLoading, !isWorking else { return }
+        resetViewerContext()
+        library.reload()
+    }
+
+    private func collapseAllDirectories() {
+        withAnimation(.easeInOut(duration: 0.14)) {
+            expandedDirectoryPaths.removeAll()
+        }
+        library.setStatus("已收起全部目录")
+    }
+
+    private func promptForNewFolder(in parent: URL?) {
+        guard let parent, !library.isLoading, !isWorking else { return }
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        input.placeholderString = "新文件夹"
+        input.stringValue = "新文件夹"
+
+        let prompt = NSAlert()
+        prompt.alertStyle = .informational
+        prompt.messageText = "新建文件夹"
+        prompt.informativeText = "将在“\(parent.lastPathComponent)”中创建文件夹。"
+        prompt.accessoryView = input
+        prompt.addButton(withTitle: "创建")
+        prompt.addButton(withTitle: "取消")
+
+        guard prompt.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            let created = try library.createDirectory(named: input.stringValue, in: parent)
+            expandedDirectoryPaths.insert(parent.standardizedFileURL.path)
+            expandedDirectoryPaths.insert(created.standardizedFileURL.path)
+        } catch {
+            alert = UserFacingAlert(title: "无法新建文件夹", message: error.localizedDescription)
+        }
+    }
+
+    private func chooseMoveDestination(for item: PhotoItem) {
+        guard let destination = chooseMoveDestination(
+            title: "移动“\(item.fileName)”",
+            prompt: "移动到这里"
+        ) else { return }
+        guard confirmMove(name: item.fileName, destination: destination) else { return }
+
+        resetViewerContext()
+        do {
+            isWorking = true
+            try library.movePhoto(item, to: destination)
+            expandedDirectoryPaths.insert(destination.standardizedFileURL.path)
+        } catch {
+            alert = UserFacingAlert(title: "无法移动照片", message: error.localizedDescription)
+        }
+        isWorking = false
+    }
+
+    private func chooseMoveDestination(for directory: PhotoDirectory) {
+        guard let destination = chooseMoveDestination(
+            title: "移动文件夹“\(directory.name)”",
+            prompt: "移动到这里"
+        ) else { return }
+        guard confirmMove(name: directory.name, destination: destination) else { return }
+
+        resetViewerContext()
+        do {
+            isWorking = true
+            try library.moveDirectory(directory, to: destination)
+            expandedDirectoryPaths.remove(directory.id)
+            expandedDirectoryPaths.insert(destination.standardizedFileURL.path)
+        } catch {
+            alert = UserFacingAlert(title: "无法移动文件夹", message: error.localizedDescription)
+        }
+        isWorking = false
+    }
+
+    private func chooseMoveDestination(title: String, prompt: String) -> URL? {
+        let panel = NSOpenPanel()
+        panel.title = title
+        panel.prompt = prompt
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = selectedDirectoryURL
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
+    }
+
+    private func confirmMove(name: String, destination: URL) -> Bool {
+        let confirmation = NSAlert()
+        confirmation.alertStyle = .informational
+        confirmation.messageText = "移动“\(name)”？"
+        confirmation.informativeText = "目标目录：\n\(destination.path)"
+        confirmation.addButton(withTitle: "移动")
+        confirmation.addButton(withTitle: "取消")
+        return confirmation.runModal() == .alertFirstButtonReturn
     }
 
     private func openViewer(_ item: PhotoItem) {

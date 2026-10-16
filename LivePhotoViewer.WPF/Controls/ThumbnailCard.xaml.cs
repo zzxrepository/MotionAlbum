@@ -36,6 +36,7 @@ namespace LivePhotoViewer.WPF.Controls
         public event EventHandler<string>? PhotoOpened;
         public event EventHandler<string>? FavoriteToggled;
         public event EventHandler<string>? RevealRequested;
+        public event EventHandler<string>? MoveRequested;
         public event EventHandler<string>? TrashRequested;
 
         public ThumbnailCard(PhotoItem photo, bool isLoading = false)
@@ -205,11 +206,14 @@ namespace LivePhotoViewer.WPF.Controls
             };
             var reveal = new MenuItem { Header = "在文件资源管理器中显示" };
             reveal.Click += (_, _) => RevealRequested?.Invoke(this, FilePath);
+            var move = new MenuItem { Header = "移动到…" };
+            move.Click += (_, _) => MoveRequested?.Invoke(this, FilePath);
             var trash = new MenuItem { Header = "移入回收站" };
             trash.Click += (_, _) => TrashRequested?.Invoke(this, FilePath);
             menu.Items.Add(open);
             menu.Items.Add(favorite);
             menu.Items.Add(new Separator());
+            menu.Items.Add(move);
             menu.Items.Add(reveal);
             menu.Items.Add(trash);
             menu.Opened += (_, _) => favorite.Header = _photo.IsFavorite ? "取消喜欢" : "加入我喜欢";

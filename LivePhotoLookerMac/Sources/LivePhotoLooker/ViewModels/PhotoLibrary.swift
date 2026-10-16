@@ -14,6 +14,37 @@ private struct VisibleCacheSignature: Equatable {
     let includeSubfolders: Bool
 }
 
+private struct PhotoFolderScanResult: Sendable {
+    let descriptors: [PhotoFileDescriptor]
+    let directoryURLs: [URL]
+}
+
+enum LibraryResourceError: LocalizedError {
+    case invalidFolderName
+    case outsideLibrary
+    case destinationExists(String)
+    case cannotMoveLibraryRoot
+    case cannotMoveIntoItself
+    case alreadyInDestination
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidFolderName:
+            return "文件夹名称不能为空，也不能包含 / 或 :。"
+        case .outsideLibrary:
+            return "目标位置必须位于当前打开的图库根目录内。"
+        case let .destinationExists(name):
+            return "目标位置已经存在“\(name)”，请先改名或选择其他目录。"
+        case .cannotMoveLibraryRoot:
+            return "不能移动当前打开的图库根目录。"
+        case .cannotMoveIntoItself:
+            return "不能把文件夹移动到它自己或它的子目录中。"
+        case .alreadyInDestination:
+            return "文件已经位于所选目录中。"
+        }
+    }
+}
+
 @MainActor
 final class PhotoLibrary: ObservableObject {
     @Published private(set) var photos: [PhotoItem] = []
@@ -182,9 +213,9 @@ final class PhotoLibrary: ObservableObject {
         }
     }
 
-    func reload() {
+    func reload(selecting folder: URL? = nil) {
         guard let currentFolder else { return }
-        openFolder(currentFolder)
+        openFolder(currentFolder, remember: false, browsing: folder ?? browsingFolder)
     }
 
     @discardableResult
@@ -216,7 +247,11 @@ final class PhotoLibrary: ObservableObject {
     }
 
     @discardableResult
-    func openFolder(_ folder: URL, remember: Bool = true) -> Bool {
+    func openFolder(
+        _ folder: URL,
+        remember: Bool = true,
+        browsing requestedBrowsingFolder: URL? = nil
+    ) -> Bool {
         let folder = folder.standardizedFileURL
         guard Self.isReadableDirectory(folder) else {
             refreshRecentFolders()
@@ -237,7 +272,14 @@ final class PhotoLibrary: ObservableObject {
         }
 
         currentFolder = folder
-        browsingFolder = folder
+        if let requestedBrowsingFolder {
+            let candidate = requestedBrowsingFolder.standardizedFileURL
+            browsingFolder = Self.isPath(candidate.path, equalToOrDescendantOf: folder.path)
+                ? candidate
+                : folder
+        } else {
+            browsingFolder = folder
+        }
         directories = [PhotoDirectory(url: folder, parentPath: nil)]
         directoryChildrenByPath = [:]
         directPhotosByPath = [:]
@@ -278,11 +320,13 @@ final class PhotoLibrary: ObservableObject {
                     didShowCachedIndex = true
                 }
 
-                let descriptors = try await Task.detached(priority: .userInitiated) {
+                let scanResult = try await Task.detached(priority: .userInitiated) {
                     try Self.scanPhotoFiles(in: folder, recursively: recursive)
                 }.value
                 try Task.checkCancellation()
                 guard self.generation == currentGeneration else { return }
+
+                let descriptors = scanResult.descriptors
 
                 if didShowCachedIndex {
                     await self.libraryIndexStore.replaceFolderIndex(
@@ -295,6 +339,7 @@ final class PhotoLibrary: ObservableObject {
                         indexedDescriptors ?? descriptors,
                         in: folder,
                         generation: currentGeneration,
+                        discoveredDirectories: scanResult.directoryURLs,
                         statusMessage: descriptors.isEmpty
                             ? "该文件夹中没有可支持的照片或视频"
                             : "已核对目录，当前 \(descriptors.count) 个媒体文件"
@@ -304,6 +349,7 @@ final class PhotoLibrary: ObservableObject {
                         descriptors,
                         in: folder,
                         generation: currentGeneration,
+                        discoveredDirectories: scanResult.directoryURLs,
                         statusMessage: descriptors.isEmpty
                             ? "该文件夹中没有可支持的照片或视频"
                             : "已加载 \(descriptors.count) 个媒体文件"
@@ -337,6 +383,7 @@ final class PhotoLibrary: ObservableObject {
         _ descriptors: [PhotoFileDescriptor],
         in folder: URL,
         generation currentGeneration: UUID,
+        discoveredDirectories: [URL] = [],
         statusMessage message: String
     ) {
         detectionQueue.cancelAllOperations()
@@ -366,7 +413,7 @@ final class PhotoLibrary: ObservableObject {
             item.holdFrameTime = holdFrameMap[selectionKey]
             return item
         }
-        rebuildDirectoryIndex(root: folder)
+        rebuildDirectoryIndex(root: folder, discoveredDirectories: discoveredDirectories)
         photoIDSet = Set(photos.map(\.id))
         revision &+= 1
         isLoading = false
@@ -494,6 +541,103 @@ final class PhotoLibrary: ObservableObject {
 
     func revealInFinder(_ item: PhotoItem) {
         NSWorkspace.shared.activateFileViewerSelecting([item.url])
+    }
+
+    func revealInFinder(_ directory: PhotoDirectory) {
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: directory.url.path)
+    }
+
+    @discardableResult
+    func createDirectory(named rawName: String, in parent: URL) throws -> URL {
+        guard let currentFolder else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard name.isEmpty == false,
+              name != ".",
+              name != "..",
+              name.contains("/") == false,
+              name.contains(":") == false else {
+            throw LibraryResourceError.invalidFolderName
+        }
+
+        let parent = parent.standardizedFileURL
+        guard Self.isPath(parent.path, equalToOrDescendantOf: currentFolder.path) else {
+            throw LibraryResourceError.outsideLibrary
+        }
+        let destination = parent.appendingPathComponent(name, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: destination.path) == false else {
+            throw LibraryResourceError.destinationExists(name)
+        }
+        try FileManager.default.createDirectory(
+            at: destination,
+            withIntermediateDirectories: false
+        )
+        statusMessage = "已新建文件夹：\(name)"
+        reload(selecting: parent)
+        return destination
+    }
+
+    func movePhoto(_ item: PhotoItem, to destinationDirectory: URL) throws {
+        guard let currentFolder else { throw CocoaError(.fileNoSuchFile) }
+        let destinationDirectory = destinationDirectory.standardizedFileURL
+        guard Self.isPath(destinationDirectory.path, equalToOrDescendantOf: currentFolder.path) else {
+            throw LibraryResourceError.outsideLibrary
+        }
+        let oldSelectionKey = item.selectionKey
+        let destinations = try Self.moveResources(item.originalResourceURLs, to: destinationDirectory)
+        guard let newImageURL = destinations.first else { return }
+        let newSelectionKey = Self.relativeSelectionKey(for: newImageURL, root: currentFolder)
+
+        selectionStore.setSelected(item.isSelected, fileName: newSelectionKey, folder: currentFolder)
+        selectionStore.setSelected(false, fileName: oldSelectionKey, folder: currentFolder)
+        tagStore.setTags(item.tags, fileName: newSelectionKey, folder: currentFolder)
+        tagStore.setTags([], fileName: oldSelectionKey, folder: currentFolder)
+        holdFrameStore.setHoldFrameTime(item.holdFrameTime, fileName: newSelectionKey, folder: currentFolder)
+        holdFrameStore.setHoldFrameTime(nil, fileName: oldSelectionKey, folder: currentFolder)
+
+        statusMessage = "已移动：\(item.fileName) → \(destinationDirectory.lastPathComponent)"
+        reload(selecting: destinationDirectory)
+    }
+
+    func moveDirectory(_ directory: PhotoDirectory, to destinationDirectory: URL) throws {
+        guard let currentFolder else { throw CocoaError(.fileNoSuchFile) }
+        let source = directory.url.standardizedFileURL
+        let destinationDirectory = destinationDirectory.standardizedFileURL
+        guard source.path != currentFolder.path else {
+            throw LibraryResourceError.cannotMoveLibraryRoot
+        }
+        guard Self.isPath(destinationDirectory.path, equalToOrDescendantOf: currentFolder.path) else {
+            throw LibraryResourceError.outsideLibrary
+        }
+        guard Self.isPath(destinationDirectory.path, equalToOrDescendantOf: source.path) == false else {
+            throw LibraryResourceError.cannotMoveIntoItself
+        }
+        let destination = destinationDirectory.appendingPathComponent(source.lastPathComponent, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: destination.path) == false else {
+            throw LibraryResourceError.destinationExists(source.lastPathComponent)
+        }
+
+        let affectedItems = photos.filter {
+            Self.isPath($0.url.deletingLastPathComponent().path, equalToOrDescendantOf: source.path)
+        }
+        try FileManager.default.moveItem(at: source, to: destination)
+
+        for item in affectedItems {
+            let relativeSuffix = String(item.url.path.dropFirst(source.path.count))
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let newURL = destination.appendingPathComponent(relativeSuffix)
+            let newSelectionKey = Self.relativeSelectionKey(for: newURL, root: currentFolder)
+            selectionStore.setSelected(item.isSelected, fileName: newSelectionKey, folder: currentFolder)
+            selectionStore.setSelected(false, fileName: item.selectionKey, folder: currentFolder)
+            tagStore.setTags(item.tags, fileName: newSelectionKey, folder: currentFolder)
+            tagStore.setTags([], fileName: item.selectionKey, folder: currentFolder)
+            holdFrameStore.setHoldFrameTime(item.holdFrameTime, fileName: newSelectionKey, folder: currentFolder)
+            holdFrameStore.setHoldFrameTime(nil, fileName: item.selectionKey, folder: currentFolder)
+        }
+
+        statusMessage = "已移动文件夹：\(directory.name) → \(destinationDirectory.lastPathComponent)"
+        reload(selecting: destination)
     }
 
     private func schedulePlaceResolutionForSearch() {
@@ -742,7 +886,7 @@ final class PhotoLibrary: ObservableObject {
         }
     }
 
-    private func rebuildDirectoryIndex(root: URL) {
+    private func rebuildDirectoryIndex(root: URL, discoveredDirectories: [URL] = []) {
         let root = root.standardizedFileURL
         let rootPath = root.path
         var directoriesByPath: [String: PhotoDirectory] = [
@@ -753,6 +897,23 @@ final class PhotoLibrary: ObservableObject {
         var descendantCounts: [String: Int] = [:]
         var directSizes: [String: Int64] = [:]
         var descendantSizes: [String: Int64] = [:]
+
+        for discoveredURL in discoveredDirectories {
+            var directory = discoveredURL.standardizedFileURL
+            guard Self.isPath(directory.path, equalToOrDescendantOf: rootPath) else { continue }
+            while Self.isPath(directory.path, equalToOrDescendantOf: rootPath) {
+                let path = directory.path
+                if directoriesByPath[path] == nil {
+                    let parent = directory.deletingLastPathComponent().standardizedFileURL
+                    directoriesByPath[path] = PhotoDirectory(
+                        url: directory,
+                        parentPath: path == rootPath ? nil : parent.path
+                    )
+                }
+                guard path != rootPath else { break }
+                directory = directory.deletingLastPathComponent().standardizedFileURL
+            }
+        }
 
         for item in photos {
             var directory = item.url.deletingLastPathComponent().standardizedFileURL
@@ -808,7 +969,8 @@ final class PhotoLibrary: ObservableObject {
         descendantPhotoSizesByPath = descendantSizes
 
         if let browsingFolder,
-           directoriesByPath[browsingFolder.standardizedFileURL.path] == nil {
+           directoriesByPath[browsingFolder.standardizedFileURL.path] == nil,
+           Self.isReadableDirectory(browsingFolder) == false {
             self.browsingFolder = root
         }
     }
@@ -919,14 +1081,16 @@ final class PhotoLibrary: ObservableObject {
     nonisolated private static func scanPhotoFiles(
         in folder: URL,
         recursively: Bool
-    ) throws -> [PhotoFileDescriptor] {
+    ) throws -> PhotoFolderScanResult {
         let keys: Set<URLResourceKey> = [
+            .isDirectoryKey,
             .isRegularFileKey,
             .fileSizeKey,
             .contentModificationDateKey,
             .isSymbolicLinkKey
         ]
         var candidateURLs: [URL] = []
+        var directoryURLs: [URL] = [folder.standardizedFileURL]
 
         if recursively {
             guard let enumerator = FileManager.default.enumerator(
@@ -937,10 +1101,20 @@ final class PhotoLibrary: ObservableObject {
                     AppLogger.warning("无法读取目录：\(url.path)", error: error)
                     return true
                 }
-            ) else { return [] }
+            ) else {
+                return PhotoFolderScanResult(
+                    descriptors: [],
+                    directoryURLs: [folder.standardizedFileURL]
+                )
+            }
 
             for case let url as URL in enumerator {
                 try Task.checkCancellation()
+                let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+                if values?.isDirectory == true {
+                    directoryURLs.append(url.standardizedFileURL)
+                    continue
+                }
                 guard supportedFileExtensions.contains(url.pathExtension.lowercased()) else { continue }
                 candidateURLs.append(url)
             }
@@ -950,6 +1124,9 @@ final class PhotoLibrary: ObservableObject {
                 includingPropertiesForKeys: Array(keys),
                 options: [.skipsHiddenFiles]
             )
+            directoryURLs.append(contentsOf: urls.filter {
+                (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            })
             candidateURLs = urls.filter { supportedFileExtensions.contains($0.pathExtension.lowercased()) }
         }
 
@@ -972,12 +1149,49 @@ final class PhotoLibrary: ObservableObject {
                 pairedVideoPaths: pairedVideoPaths
             )
         }
-        return results.sorted {
-            $0.url.lastPathComponent.localizedStandardCompare($1.url.lastPathComponent) == .orderedAscending
+        return PhotoFolderScanResult(
+            descriptors: results.sorted {
+                $0.url.lastPathComponent.localizedStandardCompare($1.url.lastPathComponent) == .orderedAscending
+            },
+            directoryURLs: Array(Set(directoryURLs)).sorted {
+                $0.path.localizedStandardCompare($1.path) == .orderedAscending
+            }
+        )
+    }
+
+    nonisolated private static func moveResources(_ sourceURLs: [URL], to destinationDirectory: URL) throws -> [URL] {
+        let fileManager = FileManager.default
+        guard sourceURLs.isEmpty == false else { return [] }
+        var pairs: [(source: URL, destination: URL)] = []
+        for source in sourceURLs {
+            let destination = destinationDirectory.appendingPathComponent(source.lastPathComponent)
+            if source.standardizedFileURL.path == destination.standardizedFileURL.path {
+                throw LibraryResourceError.alreadyInDestination
+            }
+            if fileManager.fileExists(atPath: destination.path) {
+                throw LibraryResourceError.destinationExists(source.lastPathComponent)
+            }
+            pairs.append((source, destination))
+        }
+
+        var moved: [(source: URL, destination: URL)] = []
+        do {
+            for pair in pairs {
+                try fileManager.moveItem(at: pair.source, to: pair.destination)
+                moved.append(pair)
+            }
+            return pairs.map(\.destination)
+        } catch {
+            for pair in moved.reversed() where fileManager.fileExists(atPath: pair.destination.path) {
+                try? fileManager.moveItem(at: pair.destination, to: pair.source)
+            }
+            throw error
         }
     }
 
-    nonisolated private static let imageExtensions = Set(["jpg", "jpeg", "heic", "heif"])
+    nonisolated private static let imageExtensions = Set([
+        "jpg", "jpeg", "heic", "heif", "png", "webp", "tif", "tiff", "bmp"
+    ])
     nonisolated private static let videoExtensions = Set(["mov", "mp4", "m4v"])
     nonisolated private static let supportedFileExtensions = imageExtensions.union(videoExtensions)
 

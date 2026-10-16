@@ -1,4 +1,7 @@
 import Foundation
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 
 private final class AsyncResultBox<T>: @unchecked Sendable {
     let semaphore = DispatchSemaphore(value: 0)
@@ -147,16 +150,76 @@ enum SelfTest {
             failures.append("SQLite 图库索引测试异常：\(error.localizedDescription)")
         }
 
+        do {
+            try testImageRotation()
+        } catch {
+            failures.append("图片旋转保存测试异常：\(error.localizedDescription)")
+        }
+
         if failures.isEmpty {
             if samples == nil {
-                print("✅ 自检通过：24 MB 大文件扫描、废纸篓缺失文件处理、SQLite 图库索引")
+                print("✅ 自检通过：图片旋转保存、24 MB 大文件扫描、废纸篓缺失文件处理、SQLite 图库索引")
             } else {
-                print("✅ 自检通过：荣耀/华为/Apple/Android V1-V2/OPPO 实况解析、精确视频提取、24 MB 大文件扫描、废纸篓与 SQLite 索引")
+                print("✅ 自检通过：荣耀/华为/Apple/Android V1-V2/OPPO 实况解析、精确视频提取、图片旋转保存、24 MB 大文件扫描、废纸篓与 SQLite 索引")
             }
             return 0
         }
         for failure in failures { print("❌ \(failure)") }
         return 1
+    }
+
+    private static func testImageRotation() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MotionAlbumRotation-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sourceURL = directory.appendingPathComponent("source.png")
+        let rotatedURL = directory.appendingPathComponent("rotated.png")
+        guard let context = CGContext(
+            data: nil,
+            width: 30,
+            height: 20,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let image = context.makeImage(),
+        let destination = CGImageDestinationCreateWithURL(
+            sourceURL as CFURL,
+            UTType.png.identifier as CFString,
+            1,
+            nil
+        ) else {
+            throw SelfTestError("无法创建旋转测试图片")
+        }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else {
+            throw SelfTestError("无法写入旋转测试图片")
+        }
+
+        try ImageRotationService.saveRotatedImage(
+            sourceURL: sourceURL,
+            destinationURL: rotatedURL,
+            clockwiseQuarterTurns: 1,
+            overwriteOriginal: false
+        )
+        guard let rotatedSource = CGImageSourceCreateWithURL(rotatedURL as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(rotatedSource, 0, nil) as? [CFString: Any],
+              properties[kCGImagePropertyPixelWidth] as? Int == 20,
+              properties[kCGImagePropertyPixelHeight] as? Int == 30 else {
+            throw SelfTestError("旋转 90° 后的像素尺寸错误")
+        }
+
+        try ImageRotationService.saveRotatedImage(
+            sourceURL: sourceURL,
+            destinationURL: sourceURL,
+            clockwiseQuarterTurns: 2,
+            overwriteOriginal: true
+        )
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            throw SelfTestError("覆盖保存后原图丢失")
+        }
     }
 
     private static func findSamplesDirectory(expectedFileName: String) -> URL? {

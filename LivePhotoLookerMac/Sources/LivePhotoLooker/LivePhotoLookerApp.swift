@@ -4,6 +4,9 @@ import SwiftUI
 
 extension Notification.Name {
     static let openPhotoFolder = Notification.Name("MotionAlbum.openPhotoFolder")
+    static let createPhotoFolder = Notification.Name("MotionAlbum.createPhotoFolder")
+    static let refreshPhotoFolder = Notification.Name("MotionAlbum.refreshPhotoFolder")
+    static let collapsePhotoFolders = Notification.Name("MotionAlbum.collapsePhotoFolders")
 }
 
 private func uncaughtExceptionHandler(_ exception: NSException) {
@@ -47,6 +50,23 @@ struct MotionAlbumApp: App {
                     NotificationCenter.default.post(name: .openPhotoFolder, object: nil)
                 }
                 .keyboardShortcut("o", modifiers: .command)
+
+                Button("新建文件夹…") {
+                    NotificationCenter.default.post(name: .createPhotoFolder, object: nil)
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+            }
+
+            CommandMenu("资源管理器") {
+                Button("刷新") {
+                    NotificationCenter.default.post(name: .refreshPhotoFolder, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: .command)
+
+                Button("全部收起") {
+                    NotificationCenter.default.post(name: .collapsePhotoFolders, object: nil)
+                }
+                .keyboardShortcut("c", modifiers: [.command, .option])
             }
         }
     }

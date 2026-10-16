@@ -15,6 +15,7 @@ struct PhotoGridView: View {
     let onOpen: (PhotoItem) -> Void
     let onToggleSelection: (PhotoItem) -> Void
     let onReveal: (PhotoItem) -> Void
+    let onMove: (PhotoItem) -> Void
     let onTrash: (PhotoItem) -> Void
     let onFocus: (PhotoItem) -> Void
     let isInteractionDisabled: Bool
@@ -277,6 +278,7 @@ struct PhotoGridView: View {
                     onFocus: { onFocus(item) },
                     onToggleSelection: { onToggleSelection(item) },
                     onReveal: { onReveal(item) },
+                    onMove: { onMove(item) },
                     onTrash: { onTrash(item) },
                     thumbnailSize: cardWidth,
                     isShowcaseMode: isShowcaseMode,

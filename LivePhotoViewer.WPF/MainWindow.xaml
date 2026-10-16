@@ -181,13 +181,22 @@
                         <StackPanel>
                             <Border Background="{DynamicResource ToolbarBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="10" Padding="9" Margin="0,0,0,10">
                                 <StackPanel>
-                                    <TextBlock Text="▱  资源管理器" FontSize="10" FontWeight="Bold" Foreground="{DynamicResource SubTextBrush}" Margin="0,0,0,6"/>
+                                    <DockPanel Margin="0,0,0,6">
+                                        <TextBlock Text="▱  资源管理器" FontSize="10" FontWeight="Bold" Foreground="{DynamicResource SubTextBrush}" VerticalAlignment="Center"/>
+                                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                            <Button Content="＋" Width="24" Height="22" Padding="0" Click="BtnNewFolder_Click" ToolTip="新建文件夹 (Ctrl+Shift+N)" Style="{StaticResource FlatButtonStyle}"/>
+                                            <Button Content="↻" Width="24" Height="22" Padding="0" Click="BtnRefresh_Click" ToolTip="刷新 (Ctrl+R)" Style="{StaticResource FlatButtonStyle}"/>
+                                            <Button Content="⊟" Width="24" Height="22" Padding="0" Click="BtnCollapseAll_Click" ToolTip="全部收起 (Ctrl+Alt+C)" Style="{StaticResource FlatButtonStyle}"/>
+                                        </StackPanel>
+                                    </DockPanel>
                                     <Button Content="◴  最近打开" Click="BtnRecentFolders_Click" Style="{StaticResource SidebarRowStyle}" HorizontalContentAlignment="Left"/>
                                     <Separator Margin="0,4"/>
                                     <CheckBox x:Name="IncludeSubfoldersCheckBox" Content="包含所选目录的子目录" IsChecked="False" Click="IncludeSubfoldersCheckBox_Click" Padding="7,5"/>
                                     <Separator Margin="0,4"/>
                                     <TreeView x:Name="DirectoryTreeView"
                                               SelectedItemChanged="DirectoryTreeView_SelectedItemChanged"
+                                              ContextMenuOpening="DirectoryTreeView_ContextMenuOpening"
+                                              PreviewMouseRightButtonDown="DirectoryTreeView_PreviewMouseRightButtonDown"
                                               BorderThickness="0"
                                               Background="Transparent"
                                               MaxHeight="280"
@@ -206,6 +215,9 @@
                                                 <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}"/>
                                             </Style>
                                         </TreeView.ItemContainerStyle>
+                                        <TreeView.ContextMenu>
+                                            <ContextMenu/>
+                                        </TreeView.ContextMenu>
                                     </TreeView>
                                 </StackPanel>
                             </Border>
@@ -329,6 +341,9 @@
                             <Button x:Name="BtnViewerZoomOut" Content="⌕−" Click="ViewerZoomOut_Click" Margin="12,0,0,0" Style="{StaticResource FlatButtonStyle}"/>
                             <Button x:Name="BtnViewerZoomPercent" Content="100%" Click="ViewerResetZoom_Click" Margin="6,0" Style="{StaticResource FlatButtonStyle}"/>
                             <Button x:Name="BtnViewerZoomIn" Content="⌕+" Click="ViewerZoomIn_Click" Style="{StaticResource FlatButtonStyle}"/>
+                            <Button x:Name="BtnViewerRotateLeft" Content="↶" Width="34" Click="ViewerRotateLeft_Click" Margin="12,0,0,0" ToolTip="向左旋转" Style="{StaticResource FlatButtonStyle}"/>
+                            <Button x:Name="BtnViewerRotateRight" Content="↷" Width="34" Click="ViewerRotateRight_Click" Margin="6,0,0,0" ToolTip="向右旋转" Style="{StaticResource FlatButtonStyle}"/>
+                            <Button x:Name="BtnViewerSaveRotation" Content="▣" Width="34" Click="ViewerSaveRotation_Click" Margin="6,0,0,0" ToolTip="保存旋转结果" Style="{StaticResource FlatButtonStyle}"/>
                             <Button x:Name="BtnViewerFavorite" Content="♡  我喜欢" Click="ViewerFav_Click" Margin="12,0,0,0" Style="{StaticResource FlatButtonStyle}"/>
                             <Button x:Name="BtnViewerEditCover" Content="◴  停留画面" Click="ViewerEditCover_Click" Margin="6,0,0,0" Visibility="Collapsed" Style="{StaticResource FlatButtonStyle}"/>
                             <Button x:Name="BtnViewerTrash" Content="♲  回收站" Click="ViewerTrash_Click" Margin="6,0,0,0" Style="{StaticResource FlatButtonStyle}"/>
@@ -339,6 +354,9 @@
 
                 <Grid x:Name="ViewerImageContainer" Grid.Row="1" Background="{DynamicResource ViewerBgBrush}" MouseWheel="ViewerImageContainer_MouseWheel" MouseLeftButtonDown="ViewerImageContainer_MouseLeftButtonDown" MouseMove="ViewerImageContainer_MouseMove" MouseLeftButtonUp="ViewerImageContainer_MouseLeftButtonUp" IsManipulationEnabled="True" ManipulationStarting="ViewerImageContainer_ManipulationStarting" ManipulationDelta="ViewerImageContainer_ManipulationDelta">
                     <Image x:Name="ViewerImage" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality" RenderTransformOrigin="0.5,0.5">
+                        <Image.LayoutTransform>
+                            <RotateTransform x:Name="ViewerRotateTransform" Angle="0"/>
+                        </Image.LayoutTransform>
                         <Image.RenderTransform>
                             <TransformGroup>
                                 <ScaleTransform x:Name="ViewerScaleTransform" ScaleX="1" ScaleY="1"/>

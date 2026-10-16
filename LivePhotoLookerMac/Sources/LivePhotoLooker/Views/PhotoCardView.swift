@@ -7,6 +7,7 @@ struct PhotoCardView: View {
     let onFocus: () -> Void
     let onToggleSelection: () -> Void
     let onReveal: () -> Void
+    let onMove: () -> Void
     let onTrash: () -> Void
     let thumbnailSize: CGFloat
     let isShowcaseMode: Bool
@@ -65,6 +66,8 @@ struct PhotoCardView: View {
                 Text("标签：\(item.tags.joined(separator: "、"))")
             }
             Divider()
+            Button("移动到…") { onMove() }
+                .disabled(isInteractionDisabled)
             Button("在访达中显示") { onReveal() }
                 .disabled(isInteractionDisabled)
             Button("移入废纸篓", role: .destructive) { onTrash() }
