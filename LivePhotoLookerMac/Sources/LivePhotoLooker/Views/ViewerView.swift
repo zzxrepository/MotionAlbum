@@ -127,12 +127,12 @@ struct ViewerView: View {
             Text(errorMessage ?? "未知错误")
         }
         .confirmationDialog(
-            "保存旋转后的图片",
+            "保存编辑",
             isPresented: $showRotationSaveOptions,
             titleVisibility: .visible
         ) {
             if protectsMotionResources {
-                Button("保存实况旋转") {
+                Button("保存实况编辑") {
                     saveMotionRotation()
                 }
             } else {
@@ -146,7 +146,7 @@ struct ViewerView: View {
             Button("取消", role: .cancel) {}
         } message: {
             if protectsMotionResources {
-                Text("“保存实况旋转”会像手机相册一样保存可恢复的查看方向，并让封面与实况视频同步旋转；原始 JPG/HEIC、内嵌视频和配套 MOV 不会被改写。也可以另存为不含动态视频的静态副本。")
+                Text("“保存实况编辑”会像手机相册一样保存可恢复的查看方向，并让封面与实况视频同步旋转；原始 JPG/HEIC、内嵌视频和配套 MOV 不会被改写。也可以另存为不含动态视频的静态副本。")
             } else {
                 Text("覆盖会直接改写磁盘上的原图；另存为会保留原文件。")
             }
@@ -558,10 +558,11 @@ struct ViewerView: View {
             Button {
                 showRotationSaveOptions = true
             } label: {
-                Image(systemName: isSavingRotation ? "hourglass" : "square.and.arrow.down")
+                Image(systemName: isSavingRotation ? "hourglass" : "checkmark.circle")
+                    .accessibilityLabel(isSavingRotation ? "正在保存编辑" : "保存编辑")
             }
             .disabled(hasPendingRotation == false || isSavingRotation || isLibraryBusy)
-            .help(isSavingRotation ? "正在保存" : "保存旋转结果")
+            .help(isSavingRotation ? "正在保存编辑" : "保存编辑")
 
             Button(action: onToggleSelection) {
                 Label(

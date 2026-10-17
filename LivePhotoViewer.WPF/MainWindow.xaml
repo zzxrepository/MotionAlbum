@@ -357,7 +357,7 @@
                             <Button x:Name="BtnViewerZoomIn" Content="⌕+" Click="ViewerZoomIn_Click" Style="{StaticResource FlatButtonStyle}"/>
                             <Button x:Name="BtnViewerRotateLeft" Content="↶" Width="34" Click="ViewerRotateLeft_Click" Margin="12,0,0,0" ToolTip="向左旋转" Style="{StaticResource FlatButtonStyle}"/>
                             <Button x:Name="BtnViewerRotateRight" Content="↷" Width="34" Click="ViewerRotateRight_Click" Margin="6,0,0,0" ToolTip="向右旋转" Style="{StaticResource FlatButtonStyle}"/>
-                            <Button x:Name="BtnViewerSaveRotation" Content="▣" Width="34" Click="ViewerSaveRotation_Click" Margin="6,0,0,0" ToolTip="保存旋转结果" Style="{StaticResource FlatButtonStyle}"/>
+                            <Button x:Name="BtnViewerSaveRotation" Content="✓" Width="34" Click="ViewerSaveRotation_Click" Margin="6,0,0,0" ToolTip="保存编辑" Style="{StaticResource FlatButtonStyle}"/>
                             <Button x:Name="BtnViewerFavorite" Content="♡  我喜欢" Click="ViewerFav_Click" Margin="12,0,0,0" Style="{StaticResource FlatButtonStyle}"/>
                             <Button x:Name="BtnViewerEditCover" Content="◴  停留画面" Click="ViewerEditCover_Click" Margin="6,0,0,0" Visibility="Collapsed" Style="{StaticResource FlatButtonStyle}"/>
                             <Button x:Name="BtnViewerTrash" Content="♲  回收站" Click="ViewerTrash_Click" Margin="6,0,0,0" Style="{StaticResource FlatButtonStyle}"/>

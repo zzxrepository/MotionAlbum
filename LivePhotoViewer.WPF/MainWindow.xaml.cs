@@ -997,7 +997,7 @@ namespace LivePhotoViewer.WPF
             var message = new TextBlock
             {
                 Text = protectsMotion
-                    ? "“保存实况旋转”会像手机相册一样保存可恢复的查看方向，并让封面与实况视频同步旋转；原始 JPG/HEIC、内嵌视频和配套 MOV 不会被改写。也可以另存为不含动态视频的静态副本。"
+                    ? "“保存实况编辑”会像手机相册一样保存可恢复的查看方向，并让封面与实况视频同步旋转；原始 JPG/HEIC、内嵌视频和配套 MOV 不会被改写。也可以另存为不含动态视频的静态副本。"
                     : canOverwrite
                         ? "覆盖会直接改写磁盘上的原图；另存为会保留原文件。"
                         : "Windows 当前不能直接写回这种图片格式，请另存为 JPG、PNG、BMP 或 TIFF。",
@@ -1015,7 +1015,7 @@ namespace LivePhotoViewer.WPF
             {
                 saveAdjustment = new Button
                 {
-                    Content = "保存实况旋转",
+                    Content = "保存实况编辑",
                     IsDefault = true,
                     MinWidth = 122,
                     Margin = new Thickness(0, 0, 6, 0),
@@ -1057,7 +1057,7 @@ namespace LivePhotoViewer.WPF
             content.Children.Add(buttons);
             var dialog = new Window
             {
-                Title = "保存旋转后的图片",
+                Title = "保存编辑",
                 Owner = this,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 SizeToContent = SizeToContent.WidthAndHeight,
@@ -2380,7 +2380,7 @@ namespace LivePhotoViewer.WPF
             }
             finally
             {
-                BtnViewerSaveRotation.Content = "▣";
+                BtnViewerSaveRotation.Content = "✓";
                 SetWorking(false);
             }
         }
