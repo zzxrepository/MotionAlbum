@@ -31,6 +31,11 @@ private enum DirectoryOutlineEntry: Identifiable {
     }
 }
 
+private enum ResourceSelectionSurface {
+    case gallery
+    case directoryOutline
+}
+
 private struct ResourceClipboardKeyboardMonitor: NSViewRepresentable {
     let isEnabled: Bool
     let onCopy: () -> Void
@@ -232,6 +237,9 @@ struct ContentView: View {
     @State private var focusedGalleryItemName: String?
     @State private var selectedResourceItemIDs = Set<String>()
     @State private var resourceSelectionAnchorID: String?
+    @State private var selectedDirectoryEntryIDs = Set<String>()
+    @State private var directorySelectionAnchorID: String?
+    @State private var activeResourceSelectionSurface: ResourceSelectionSurface = .gallery
     @State private var copiedResourceBundles: [[URL]] = []
     @State private var copiedPasteboardPaths: [String] = []
     @State private var previousGalleryItemID: String?
@@ -364,6 +372,8 @@ struct ContentView: View {
         }
         .onChange(of: library.currentFolder?.standardizedFileURL.path) { path in
             clearResourceSelection()
+            clearDirectorySelection()
+            activeResourceSelectionSurface = .gallery
             guard let path else {
                 expandedDirectoryPaths = []
                 return
@@ -375,6 +385,13 @@ struct ContentView: View {
             if let resourceSelectionAnchorID,
                visibleIDs.contains(resourceSelectionAnchorID) == false {
                 self.resourceSelectionAnchorID = nil
+            }
+        }
+        .onChange(of: visibleDirectoryEntries.map(\.id)) { visibleIDs in
+            selectedDirectoryEntryIDs.formIntersection(visibleIDs)
+            if let directorySelectionAnchorID,
+               visibleIDs.contains(directorySelectionAnchorID) == false {
+                self.directorySelectionAnchorID = nil
             }
         }
     }
@@ -739,7 +756,9 @@ struct ContentView: View {
         let hasExpandableContent = library.hasChildDirectories(directory)
             || library.directPhotoCount(in: directory) > 0
         let isExpanded = expandedDirectoryPaths.contains(directory.id)
-        let isSelected = library.browsingFolder?.standardizedFileURL.path == directory.id
+        let entry = DirectoryOutlineEntry.directory(directory, depth: depth)
+        let isCurrentDirectory = library.browsingFolder?.standardizedFileURL.path == directory.id
+        let isResourceSelected = selectedDirectoryEntryIDs.contains(entry.id)
         let directCount = library.directPhotoCount(in: directory)
         let totalCount = library.descendantPhotoCount(in: directory)
         let directSize = library.directPhotoSize(in: directory)
@@ -769,8 +788,9 @@ struct ContentView: View {
 
             Button {
                 guard !isWorking else { return }
-                resetViewerContext()
+                resetViewerContext(clearingDirectorySelection: false)
                 library.selectBrowsingFolder(directory.url)
+                selectDirectoryEntry(entry, modifiers: NSEvent.modifierFlags)
                 if hasExpandableContent {
                     withAnimation(.easeInOut(duration: 0.14)) {
                         expandedDirectoryPaths = expandedDirectoryPaths.union([directory.id])
@@ -778,8 +798,8 @@ struct ContentView: View {
                 }
             } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: isSelected ? "folder.fill" : "folder")
-                        .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                    Image(systemName: isCurrentDirectory ? "folder.fill" : "folder")
+                        .foregroundStyle(isCurrentDirectory ? Color.accentColor : Color.secondary)
                     Text(directory.name.isEmpty ? directory.url.path : directory.name)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -794,7 +814,9 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, minHeight: 28)
                 .contentShape(Rectangle())
                 .background(
-                    isSelected ? Color.accentColor.opacity(0.16) : Color.clear,
+                    isResourceSelected
+                        ? Color.accentColor.opacity(0.20)
+                        : (isCurrentDirectory ? Color.orange.opacity(0.11) : Color.clear),
                     in: RoundedRectangle(cornerRadius: 6, style: .continuous)
                 )
             }
@@ -808,6 +830,15 @@ struct ContentView: View {
         }
         .padding(.leading, min(CGFloat(depth) * 12, 72))
         .contextMenu {
+            Button {
+                copyDirectoryEntries(preferredEntry: entry)
+            } label: {
+                Label("复制", systemImage: "doc.on.doc")
+            }
+            .disabled(isWorking)
+
+            Divider()
+
             Button {
                 promptForNewFolder(in: directory.url)
             } label: {
@@ -859,11 +890,13 @@ struct ContentView: View {
         directory: PhotoDirectory,
         depth: Int
     ) -> some View {
+        let entry = DirectoryOutlineEntry.media(item, directory: directory, depth: depth)
         let isFocused = focusedGalleryItemID == item.id
-        let isResourceSelected = selectedResourceItemIDs.contains(item.id)
+        let isResourceSelected = selectedDirectoryEntryIDs.contains(entry.id)
 
         return Button {
             focusDirectoryMedia(item, in: directory)
+            selectDirectoryEntry(entry, modifiers: NSEvent.modifierFlags)
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: item.mediaKind == .video ? "play.rectangle" : "photo")
@@ -900,7 +933,7 @@ struct ContentView: View {
             .disabled(isWorking)
 
             Button {
-                copyGalleryItems(preferredItem: item)
+                copyDirectoryEntries(preferredEntry: entry)
             } label: {
                 Label("复制", systemImage: "doc.on.doc")
             }
@@ -1210,9 +1243,9 @@ struct ContentView: View {
         .background {
             ResourceClipboardKeyboardMonitor(
                 isEnabled: viewerItem == nil && isWorking == false,
-                onCopy: { copyGalleryItems(preferredItem: nil) },
+                onCopy: copyActiveResourceSelection,
                 onPaste: { pasteCopiedItems(into: selectedDirectoryURL) },
-                onSelectAll: selectAllVisibleGalleryItems
+                onSelectAll: selectAllActiveResources
             )
             .accessibilityHidden(true)
         }
@@ -1855,6 +1888,8 @@ struct ContentView: View {
 
     private func selectGalleryItem(_ item: PhotoItem, modifiers: NSEvent.ModifierFlags) {
         guard !isWorking else { return }
+        activeResourceSelectionSurface = .gallery
+        clearDirectorySelection()
         let flags = modifiers.intersection(.deviceIndependentFlagsMask)
         let extendsRange = flags.contains(.shift)
         let togglesItem = flags.contains(.command) || flags.contains(.control)
@@ -1889,6 +1924,8 @@ struct ContentView: View {
 
     private func selectAllVisibleGalleryItems() {
         guard !isWorking, library.filteredPhotos.isEmpty == false else { return }
+        activeResourceSelectionSurface = .gallery
+        clearDirectorySelection()
         selectedResourceItemIDs = Set(library.filteredPhotos.map(\.id))
         resourceSelectionAnchorID = library.filteredPhotos.first?.id
         if focusedGalleryItemID == nil, let first = library.filteredPhotos.first {
@@ -1902,6 +1939,69 @@ struct ContentView: View {
         resourceSelectionAnchorID = nil
     }
 
+    private func clearDirectorySelection() {
+        selectedDirectoryEntryIDs.removeAll()
+        directorySelectionAnchorID = nil
+    }
+
+    private func selectDirectoryEntry(
+        _ entry: DirectoryOutlineEntry,
+        modifiers: NSEvent.ModifierFlags
+    ) {
+        guard !isWorking else { return }
+        activeResourceSelectionSurface = .directoryOutline
+        clearResourceSelection()
+
+        let flags = modifiers.intersection(.deviceIndependentFlagsMask)
+        let extendsRange = flags.contains(.shift)
+        let togglesEntry = flags.contains(.command) || flags.contains(.control)
+        let visibleEntries = visibleDirectoryEntries
+
+        if extendsRange,
+           let directorySelectionAnchorID,
+           let anchorIndex = visibleEntries.firstIndex(where: { $0.id == directorySelectionAnchorID }),
+           let targetIndex = visibleEntries.firstIndex(where: { $0.id == entry.id }) {
+            let range = min(anchorIndex, targetIndex)...max(anchorIndex, targetIndex)
+            let rangeIDs = Set(range.map { visibleEntries[$0].id })
+            if togglesEntry {
+                selectedDirectoryEntryIDs.formUnion(rangeIDs)
+            } else {
+                selectedDirectoryEntryIDs = rangeIDs
+            }
+        } else if togglesEntry {
+            if selectedDirectoryEntryIDs.contains(entry.id) {
+                selectedDirectoryEntryIDs.remove(entry.id)
+            } else {
+                selectedDirectoryEntryIDs.insert(entry.id)
+            }
+            directorySelectionAnchorID = entry.id
+        } else {
+            selectedDirectoryEntryIDs = [entry.id]
+            directorySelectionAnchorID = entry.id
+        }
+
+        let count = selectedDirectoryEntryIDs.count
+        library.setStatus(count == 1 ? "已选择 1 个资源" : "已选择 \(count) 个资源")
+    }
+
+    private func selectAllVisibleDirectoryEntries() {
+        guard !isWorking, visibleDirectoryEntries.isEmpty == false else { return }
+        activeResourceSelectionSurface = .directoryOutline
+        clearResourceSelection()
+        selectedDirectoryEntryIDs = Set(visibleDirectoryEntries.map(\.id))
+        directorySelectionAnchorID = visibleDirectoryEntries.first?.id
+        library.setStatus("已选择资源管理器中可见的 \(selectedDirectoryEntryIDs.count) 个项目")
+    }
+
+    private func selectAllActiveResources() {
+        switch activeResourceSelectionSurface {
+        case .gallery:
+            selectAllVisibleGalleryItems()
+        case .directoryOutline:
+            selectAllVisibleDirectoryEntries()
+        }
+    }
+
     private func selectionStatus(fallbackName: String) -> String {
         selectedResourceItemIDs.count > 1
             ? "已选择 \(selectedResourceItemIDs.count) 张照片"
@@ -1910,6 +2010,8 @@ struct ContentView: View {
 
     private func copyGalleryItems(preferredItem: PhotoItem?) {
         guard !isWorking else { return }
+        activeResourceSelectionSurface = .gallery
+        clearDirectorySelection()
         var selectedIDs = selectedResourceItemIDs
         if let preferredItem, selectedIDs.contains(preferredItem.id) == false {
             selectedIDs = [preferredItem.id]
@@ -1931,20 +2033,82 @@ struct ContentView: View {
             return
         }
 
+        writeResourceBundlesToPasteboard(bundles)
+    }
+
+    private func copyActiveResourceSelection() {
+        switch activeResourceSelectionSurface {
+        case .gallery:
+            copyGalleryItems(preferredItem: nil)
+        case .directoryOutline:
+            copyDirectoryEntries(preferredEntry: nil)
+        }
+    }
+
+    private func copyDirectoryEntries(preferredEntry: DirectoryOutlineEntry?) {
+        guard !isWorking else { return }
+        activeResourceSelectionSurface = .directoryOutline
+        clearResourceSelection()
+
+        if let preferredEntry,
+           selectedDirectoryEntryIDs.contains(preferredEntry.id) == false {
+            selectedDirectoryEntryIDs = [preferredEntry.id]
+            directorySelectionAnchorID = preferredEntry.id
+        }
+
+        let selectedEntries = visibleDirectoryEntries.filter {
+            selectedDirectoryEntryIDs.contains($0.id)
+        }
+        let selectedDirectoryURLs = selectedEntries.compactMap { entry -> URL? in
+            guard case let .directory(directory, _) = entry else { return nil }
+            return directory.url.standardizedFileURL
+        }
+        .sorted { $0.path.count < $1.path.count }
+
+        var topLevelDirectories: [URL] = []
+        for directory in selectedDirectoryURLs {
+            guard topLevelDirectories.contains(where: {
+                Self.isPath(directory.path, equalToOrDescendantOf: $0.path)
+            }) == false else { continue }
+            topLevelDirectories.append(directory)
+        }
+
+        var bundles = topLevelDirectories.map { [$0] }
+        for entry in selectedEntries {
+            guard case let .media(item, _, _) = entry else { continue }
+            guard topLevelDirectories.contains(where: {
+                Self.isPath(item.url.path, equalToOrDescendantOf: $0.path)
+            }) == false else { continue }
+            let resources = item.originalResourceURLs.filter {
+                FileManager.default.fileExists(atPath: $0.path)
+            }
+            if resources.isEmpty == false {
+                bundles.append(resources)
+            }
+        }
+
+        guard bundles.isEmpty == false else {
+            library.setStatus("请先在资源管理器中选择要复制的项目")
+            return
+        }
+        writeResourceBundlesToPasteboard(bundles)
+    }
+
+    private func writeResourceBundlesToPasteboard(_ bundles: [[URL]]) {
         let urls = bundles.flatMap { $0 }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.writeObjects(urls.map { $0 as NSURL })
         copiedResourceBundles = bundles
         copiedPasteboardPaths = urls.map { $0.standardizedFileURL.path }.sorted()
-        library.setStatus("已复制 \(bundles.count) 个媒体项目，可在目标目录按 ⌘V 粘贴")
+        library.setStatus("已复制 \(bundles.count) 个项目，可在目标目录按 ⌘V 粘贴")
     }
 
     private func pasteCopiedItems(into destination: URL?) {
         guard let destination, !isWorking else { return }
         let bundles = pasteboardResourceBundles()
         guard bundles.isEmpty == false else {
-            library.setStatus("剪贴板中没有可粘贴的照片或视频")
+            library.setStatus("剪贴板中没有可粘贴的文件夹、照片或视频")
             return
         }
 
@@ -1953,8 +2117,9 @@ struct ContentView: View {
             do {
                 let count = try await library.copyResourceBundles(bundles, to: destination)
                 clearResourceSelection()
+                clearDirectorySelection()
                 expandedDirectoryPaths.insert(destination.standardizedFileURL.path)
-                library.setStatus("已粘贴 \(count) 个媒体项目到 \(destination.lastPathComponent)")
+                library.setStatus("已粘贴 \(count) 个项目到 \(destination.lastPathComponent)")
             } catch {
                 alert = UserFacingAlert(title: "无法粘贴照片", message: error.localizedDescription)
             }
@@ -1985,13 +2150,20 @@ struct ContentView: View {
     private static func groupClipboardResources(_ urls: [URL]) -> [[URL]] {
         let imageExtensions = Set(["jpg", "jpeg", "heic", "heif", "png", "webp", "tif", "tiff", "bmp"])
         let videoExtensions = Set(["mov", "mp4", "m4v"])
-        let existing = urls.filter {
-            FileManager.default.fileExists(atPath: $0.path)
-                && (imageExtensions.contains($0.pathExtension.lowercased())
-                    || videoExtensions.contains($0.pathExtension.lowercased()))
+        let existingDirectories = urls.filter { url in
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+                && isDirectory.boolValue
+        }
+        let existing = urls.filter { url in
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+                && isDirectory.boolValue == false
+                && (imageExtensions.contains(url.pathExtension.lowercased())
+                    || videoExtensions.contains(url.pathExtension.lowercased()))
         }
         var usedVideoPaths = Set<String>()
-        var bundles: [[URL]] = []
+        var bundles = existingDirectories.map { [$0] }
 
         for image in existing where imageExtensions.contains(image.pathExtension.lowercased()) {
             let stem = image.deletingPathExtension().lastPathComponent.lowercased()
@@ -2015,6 +2187,15 @@ struct ContentView: View {
         return bundles
     }
 
+    private static func isPath(_ path: String, equalToOrDescendantOf ancestorPath: String) -> Bool {
+        let normalizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        let normalizedAncestor = URL(fileURLWithPath: ancestorPath).standardizedFileURL.path
+        guard normalizedPath != normalizedAncestor else { return true }
+        return normalizedPath.hasPrefix(normalizedAncestor.hasSuffix("/")
+            ? normalizedAncestor
+            : normalizedAncestor + "/")
+    }
+
     private func openViewer(_ item: PhotoItem) {
         setFocusedGalleryItem(item)
         viewerItem = item
@@ -2036,7 +2217,7 @@ struct ContentView: View {
         library.selectTag(nil)
         library.searchText = ""
         library.selectBrowsingFolder(directory.url)
-        selectGalleryItem(item, modifiers: [])
+        setFocusedGalleryItem(item)
 
         DispatchQueue.main.async {
             guard library.filteredPhotos.contains(where: { $0.id == item.id }) else {
@@ -2069,10 +2250,13 @@ struct ContentView: View {
         library.setStatus("当前照片：\(item.fileName)")
     }
 
-    private func resetViewerContext() {
+    private func resetViewerContext(clearingDirectorySelection: Bool = true) {
         viewerItem = nil
         galleryScrollTargetID = nil
         clearResourceSelection()
+        if clearingDirectorySelection {
+            clearDirectorySelection()
+        }
         focusedGalleryItemID = nil
         focusedGalleryItemName = nil
         previousGalleryItemID = nil

@@ -26,6 +26,7 @@ namespace LivePhotoViewer.WPF
     {
         private enum LibraryFilter { All, Live, Video, Favorite }
         private enum RotationSaveChoice { Cancel, SaveAs, Overwrite }
+        private enum ResourceSelectionSurface { Gallery, DirectoryTree }
 
         private readonly FavoritesManager _favoriteStore = new();
         private readonly TagsManager _tagStore = new();
@@ -54,6 +55,9 @@ namespace LivePhotoViewer.WPF
         private string? _previousFocusedPhotoId;
         private readonly HashSet<string> _selectedPhotoIds = new(StringComparer.OrdinalIgnoreCase);
         private string? _selectionAnchorId;
+        private readonly HashSet<string> _selectedDirectoryPaths = new(StringComparer.OrdinalIgnoreCase);
+        private string? _directorySelectionAnchorPath;
+        private ResourceSelectionSurface _activeResourceSelectionSurface = ResourceSelectionSurface.Gallery;
         private List<List<string>> _copiedResourceBundles = new();
         private List<string> _copiedClipboardPaths = new();
         private double _galleryCardSize = 126;
@@ -185,6 +189,28 @@ namespace LivePhotoViewer.WPF
         private void DirectoryTreeView_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
         {
             if (_suppressDirectorySelection || e.NewValue is not DirectoryNode node) return;
+            SelectDirectoryNode(node, ModifierKeys.None);
+            ActivateDirectoryNode(node);
+        }
+
+        private void DirectoryTreeView_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (FindVisualParent<ToggleButton>(e.OriginalSource as DependencyObject) != null) return;
+            if (FindVisualParent<TreeViewItem>(e.OriginalSource as DependencyObject) is not { } treeItem ||
+                treeItem.DataContext is not DirectoryNode node) return;
+
+            ModifierKeys modifiers = Keyboard.Modifiers & (ModifierKeys.Shift | ModifierKeys.Control);
+            SelectDirectoryNode(node, modifiers);
+            _suppressDirectorySelection = true;
+            treeItem.IsSelected = _selectedDirectoryPaths.Contains(node.FullPath);
+            treeItem.Focus();
+            _suppressDirectorySelection = false;
+            ActivateDirectoryNode(node);
+            e.Handled = true;
+        }
+
+        private void ActivateDirectoryNode(DirectoryNode node)
+        {
             if (node.IsMediaFile)
             {
                 FocusDirectoryTreeMedia(node);
@@ -201,6 +227,171 @@ namespace LivePhotoViewer.WPF
             LibraryPathText.Text = _browsingDirectory;
             RenderGallery();
             SetStatus(CurrentScopeSummary());
+        }
+
+        private void SelectDirectoryNode(DirectoryNode node, ModifierKeys modifiers)
+        {
+            _activeResourceSelectionSurface = ResourceSelectionSurface.DirectoryTree;
+            _selectedPhotoIds.Clear();
+            _selectionAnchorId = null;
+            RefreshPhotoSelectionVisuals();
+
+            bool extendRange = modifiers.HasFlag(ModifierKeys.Shift);
+            bool toggle = modifiers.HasFlag(ModifierKeys.Control);
+            List<DirectoryNode> visibleNodes = VisibleDirectoryNodes();
+            if (extendRange && _directorySelectionAnchorPath != null)
+            {
+                int anchor = visibleNodes.FindIndex(item => string.Equals(
+                    item.FullPath, _directorySelectionAnchorPath, StringComparison.OrdinalIgnoreCase));
+                int target = visibleNodes.FindIndex(item => string.Equals(
+                    item.FullPath, node.FullPath, StringComparison.OrdinalIgnoreCase));
+                if (anchor >= 0 && target >= 0)
+                {
+                    if (!toggle) _selectedDirectoryPaths.Clear();
+                    int start = Math.Min(anchor, target);
+                    int end = Math.Max(anchor, target);
+                    for (int index = start; index <= end; index++)
+                        _selectedDirectoryPaths.Add(visibleNodes[index].FullPath);
+                }
+                else
+                {
+                    SelectSingleDirectoryNode(node);
+                }
+            }
+            else if (toggle)
+            {
+                if (!_selectedDirectoryPaths.Add(node.FullPath))
+                    _selectedDirectoryPaths.Remove(node.FullPath);
+                _directorySelectionAnchorPath = node.FullPath;
+            }
+            else
+            {
+                SelectSingleDirectoryNode(node);
+            }
+
+            RefreshDirectorySelectionVisuals();
+            SetStatus(_selectedDirectoryPaths.Count == 1
+                ? "已选择 1 个资源"
+                : $"已选择 {_selectedDirectoryPaths.Count:N0} 个资源");
+        }
+
+        private void SelectSingleDirectoryNode(DirectoryNode node)
+        {
+            _selectedDirectoryPaths.Clear();
+            _selectedDirectoryPaths.Add(node.FullPath);
+            _directorySelectionAnchorPath = node.FullPath;
+        }
+
+        private void ClearDirectorySelection()
+        {
+            if (_selectedDirectoryPaths.Count == 0 && _directorySelectionAnchorPath == null) return;
+            _selectedDirectoryPaths.Clear();
+            _directorySelectionAnchorPath = null;
+            RefreshDirectorySelectionVisuals();
+        }
+
+        private void SelectAllVisibleDirectoryNodes()
+        {
+            List<DirectoryNode> visibleNodes = VisibleDirectoryNodes();
+            if (visibleNodes.Count == 0) return;
+            _activeResourceSelectionSurface = ResourceSelectionSurface.DirectoryTree;
+            _selectedPhotoIds.Clear();
+            _selectionAnchorId = null;
+            RefreshPhotoSelectionVisuals();
+            _selectedDirectoryPaths.Clear();
+            foreach (DirectoryNode node in visibleNodes) _selectedDirectoryPaths.Add(node.FullPath);
+            _directorySelectionAnchorPath = visibleNodes[0].FullPath;
+            RefreshDirectorySelectionVisuals();
+            SetStatus($"已选择资源管理器中可见的 {_selectedDirectoryPaths.Count:N0} 个项目");
+        }
+
+        private List<DirectoryNode> VisibleDirectoryNodes()
+        {
+            var result = new List<DirectoryNode>();
+            if (DirectoryTreeView.ItemsSource is not IEnumerable<DirectoryNode> roots) return result;
+
+            void Append(DirectoryNode node)
+            {
+                result.Add(node);
+                if (!node.IsExpanded) return;
+                foreach (DirectoryNode child in node.Children) Append(child);
+            }
+
+            foreach (DirectoryNode root in roots) Append(root);
+            return result;
+        }
+
+        private IEnumerable<DirectoryNode> AllDirectoryNodes()
+        {
+            if (DirectoryTreeView.ItemsSource is not IEnumerable<DirectoryNode> roots)
+                return Enumerable.Empty<DirectoryNode>();
+            var result = new List<DirectoryNode>();
+            void Append(DirectoryNode node)
+            {
+                result.Add(node);
+                foreach (DirectoryNode child in node.Children) Append(child);
+            }
+            foreach (DirectoryNode root in roots) Append(root);
+            return result;
+        }
+
+        private void RefreshDirectorySelectionVisuals()
+        {
+            foreach (DirectoryNode node in AllDirectoryNodes())
+                node.IsResourceSelected = _selectedDirectoryPaths.Contains(node.FullPath);
+        }
+
+        private static TreeViewItem? FindTreeViewItem(ItemsControl parent, DirectoryNode target)
+        {
+            if (parent.ItemContainerGenerator.ContainerFromItem(target) is TreeViewItem direct)
+                return direct;
+            foreach (object item in parent.Items)
+            {
+                if (parent.ItemContainerGenerator.ContainerFromItem(item) is not TreeViewItem container)
+                    continue;
+                if (FindTreeViewItem(container, target) is { } nested) return nested;
+            }
+            return null;
+        }
+
+        private bool HandleDirectoryTreeKeyboard(KeyEventArgs e, bool shift)
+        {
+            if (FindVisualParent<TreeViewItem>(Keyboard.FocusedElement as DependencyObject) == null)
+                return false;
+
+            if (shift && (e.Key is Key.Up or Key.Down))
+            {
+                List<DirectoryNode> visibleNodes = VisibleDirectoryNodes();
+                if (visibleNodes.Count == 0) return true;
+                DirectoryNode? currentNode = DirectoryTreeView.SelectedItem as DirectoryNode;
+                int currentIndex = currentNode == null ? -1 : visibleNodes.IndexOf(currentNode);
+                int targetIndex = Math.Clamp(
+                    currentIndex + (e.Key == Key.Down ? 1 : -1),
+                    0,
+                    visibleNodes.Count - 1);
+                DirectoryNode target = visibleNodes[targetIndex];
+                SelectDirectoryNode(target, ModifierKeys.Shift);
+                if (FindTreeViewItem(DirectoryTreeView, target) is { } container)
+                {
+                    _suppressDirectorySelection = true;
+                    container.IsSelected = true;
+                    container.Focus();
+                    container.BringIntoView();
+                    _suppressDirectorySelection = false;
+                }
+                ActivateDirectoryNode(target);
+                e.Handled = true;
+                return true;
+            }
+
+            if (e.Key == Key.Enter && DirectoryTreeView.SelectedItem is DirectoryNode selected)
+            {
+                ActivateDirectoryNode(selected);
+                e.Handled = true;
+                return true;
+            }
+
+            return true;
         }
 
         private void BtnNewFolder_Click(object sender, RoutedEventArgs e)
@@ -256,8 +447,16 @@ namespace LivePhotoViewer.WPF
         {
             if (FindVisualParent<TreeViewItem>(e.OriginalSource as DependencyObject) is { } treeItem)
             {
+                if (treeItem.DataContext is DirectoryNode node)
+                {
+                    _activeResourceSelectionSurface = ResourceSelectionSurface.DirectoryTree;
+                    if (!_selectedDirectoryPaths.Contains(node.FullPath))
+                        SelectDirectoryNode(node, ModifierKeys.None);
+                }
+                _suppressDirectorySelection = true;
                 treeItem.IsSelected = true;
                 treeItem.Focus();
+                _suppressDirectorySelection = false;
             }
         }
 
@@ -271,6 +470,10 @@ namespace LivePhotoViewer.WPF
 
             ContextMenu menu = DirectoryTreeView.ContextMenu ?? new ContextMenu();
             menu.Items.Clear();
+            var copy = new MenuItem { Header = "复制", InputGestureText = "Ctrl+C" };
+            copy.Click += (_, _) => CopySelectedDirectoryResources(node);
+            menu.Items.Add(copy);
+            menu.Items.Add(new Separator());
             if (!node.IsMediaFile)
             {
                 var create = new MenuItem { Header = "新建子文件夹…" };
@@ -431,6 +634,8 @@ namespace LivePhotoViewer.WPF
         private void CopySelectedPhotos(PhotoItem? preferredPhoto = null)
         {
             if (_isWorking) return;
+            _activeResourceSelectionSurface = ResourceSelectionSurface.Gallery;
+            ClearDirectorySelection();
             if (preferredPhoto != null && !_selectedPhotoIds.Contains(preferredPhoto.StableId))
             {
                 SelectSinglePhoto(preferredPhoto);
@@ -453,6 +658,64 @@ namespace LivePhotoViewer.WPF
                 return;
             }
 
+            WriteResourceBundlesToClipboard(bundles);
+        }
+
+        private void CopyActiveResourceSelection()
+        {
+            if (_activeResourceSelectionSurface == ResourceSelectionSurface.DirectoryTree)
+                CopySelectedDirectoryResources();
+            else
+                CopySelectedPhotos();
+        }
+
+        private void CopySelectedDirectoryResources(DirectoryNode? preferredNode = null)
+        {
+            if (_isWorking) return;
+            _activeResourceSelectionSurface = ResourceSelectionSurface.DirectoryTree;
+            _selectedPhotoIds.Clear();
+            _selectionAnchorId = null;
+            RefreshPhotoSelectionVisuals();
+            if (preferredNode != null && !_selectedDirectoryPaths.Contains(preferredNode.FullPath))
+            {
+                SelectSingleDirectoryNode(preferredNode);
+                RefreshDirectorySelectionVisuals();
+            }
+
+            List<DirectoryNode> selectedNodes = AllDirectoryNodes()
+                .Where(node => _selectedDirectoryPaths.Contains(node.FullPath))
+                .ToList();
+            List<string> topDirectories = selectedNodes
+                .Where(node => !node.IsMediaFile && Directory.Exists(node.FullPath))
+                .Select(node => NormalizeDirectoryPath(node.FullPath))
+                .OrderBy(path => path.Length)
+                .Aggregate(new List<string>(), (result, path) =>
+                {
+                    if (!result.Any(parent => IsSameOrDescendant(path, parent))) result.Add(path);
+                    return result;
+                });
+
+            var bundles = topDirectories.Select(path => new List<string> { path }).ToList();
+            foreach (DirectoryNode node in selectedNodes.Where(node => node.IsMediaFile))
+            {
+                if (topDirectories.Any(parent => IsSameOrDescendant(node.FullPath, parent))) continue;
+                PhotoItem? photo = _photos.FirstOrDefault(item => string.Equals(
+                    item.StableId, node.MediaStableId, StringComparison.OrdinalIgnoreCase));
+                if (photo == null) continue;
+                List<string> resources = photo.OriginalResourcePaths.Where(File.Exists).ToList();
+                if (resources.Count > 0) bundles.Add(resources);
+            }
+
+            if (bundles.Count == 0)
+            {
+                SetStatus("请先在资源管理器中选择要复制的项目");
+                return;
+            }
+            WriteResourceBundlesToClipboard(bundles);
+        }
+
+        private void WriteResourceBundlesToClipboard(List<List<string>> bundles)
+        {
             var paths = bundles.SelectMany(bundle => bundle)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
@@ -466,7 +729,7 @@ namespace LivePhotoViewer.WPF
                     .Select(Path.GetFullPath)
                     .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
                     .ToList();
-                SetStatus($"已复制 {bundles.Count:N0} 个媒体项目，可在目标目录按 Ctrl+V 粘贴");
+                SetStatus($"已复制 {bundles.Count:N0} 个项目，可在目标目录按 Ctrl+V 粘贴");
             }
             catch (Exception ex)
             {
@@ -488,7 +751,7 @@ namespace LivePhotoViewer.WPF
             List<List<string>> bundles = ClipboardResourceBundles();
             if (bundles.Count == 0)
             {
-                SetStatus("剪贴板中没有可粘贴的照片或视频");
+                SetStatus("剪贴板中没有可粘贴的文件夹、照片或视频");
                 return;
             }
 
@@ -498,8 +761,10 @@ namespace LivePhotoViewer.WPF
                 int copied = await Task.Run(() => CopyResourceBundles(bundles, destination));
                 _selectedPhotoIds.Clear();
                 _selectionAnchorId = null;
+                _selectedDirectoryPaths.Clear();
+                _directorySelectionAnchorPath = null;
                 await OpenDirectoryAsync(_currentDirectory, remember: false, browsingDirectory: destination);
-                SetStatus($"已粘贴 {copied:N0} 个媒体项目到 {DirectoryName(destination)}");
+                SetStatus($"已粘贴 {copied:N0} 个项目到 {DirectoryName(destination)}");
             }
             catch (Exception ex)
             {
@@ -517,7 +782,7 @@ namespace LivePhotoViewer.WPF
             {
                 if (!Clipboard.ContainsFileDropList()) return new List<List<string>>();
                 List<string> paths = Clipboard.GetFileDropList().Cast<string>()
-                    .Where(File.Exists)
+                    .Where(path => File.Exists(path) || Directory.Exists(path))
                     .Select(Path.GetFullPath)
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
@@ -537,11 +802,14 @@ namespace LivePhotoViewer.WPF
 
         private static List<List<string>> GroupClipboardResources(IEnumerable<string> paths)
         {
+            List<string> directories = paths.Where(Directory.Exists)
+                .Select(NormalizeDirectoryPath)
+                .ToList();
             List<string> media = paths
                 .Where(path => LivePhotoExtractor.IsSupportedImage(path) || LivePhotoExtractor.IsSupportedVideo(path))
                 .ToList();
             var usedVideos = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var bundles = new List<List<string>>();
+            var bundles = directories.Select(path => new List<string> { path }).ToList();
             foreach (string image in media.Where(LivePhotoExtractor.IsSupportedImage))
             {
                 var bundle = new List<string> { image };
@@ -571,10 +839,18 @@ namespace LivePhotoViewer.WPF
             {
                 foreach (List<string> sources in bundles)
                 {
+                    foreach (string sourceDirectory in sources.Where(Directory.Exists))
+                    {
+                        if (IsSameOrDescendant(destinationDirectory, sourceDirectory))
+                            throw new InvalidOperationException("不能把文件夹复制到它自己或它的子目录中。");
+                    }
                     List<string> destinations = UniqueCopyDestinations(sources, destinationDirectory);
                     for (int index = 0; index < sources.Count; index++)
                     {
-                        File.Copy(sources[index], destinations[index]);
+                        if (Directory.Exists(sources[index]))
+                            CopyDirectoryRecursively(sources[index], destinations[index]);
+                        else
+                            File.Copy(sources[index], destinations[index]);
                         copiedPaths.Add(destinations[index]);
                     }
                 }
@@ -584,7 +860,12 @@ namespace LivePhotoViewer.WPF
             {
                 foreach (string copiedPath in copiedPaths.AsEnumerable().Reverse())
                 {
-                    try { if (File.Exists(copiedPath)) File.Delete(copiedPath); } catch { }
+                    try
+                    {
+                        if (File.Exists(copiedPath)) File.Delete(copiedPath);
+                        else if (Directory.Exists(copiedPath)) Directory.Delete(copiedPath, recursive: true);
+                    }
+                    catch { }
                 }
                 throw;
             }
@@ -602,14 +883,27 @@ namespace LivePhotoViewer.WPF
                 };
                 List<string> candidates = sources.Select(source => Path.Combine(
                     destinationDirectory,
-                    Path.GetFileNameWithoutExtension(source) + suffix + Path.GetExtension(source))).ToList();
+                    Directory.Exists(source)
+                        ? Path.GetFileName(source) + suffix
+                        : Path.GetFileNameWithoutExtension(source) + suffix + Path.GetExtension(source))).ToList();
                 if (candidates.Distinct(StringComparer.OrdinalIgnoreCase).Count() == candidates.Count &&
                     candidates.All(candidate => !File.Exists(candidate) && !Directory.Exists(candidate)))
                     return candidates;
             }
             return sources.Select(source => Path.Combine(
                 destinationDirectory,
-                $"{Path.GetFileNameWithoutExtension(source)}-{Guid.NewGuid():N}{Path.GetExtension(source)}")).ToList();
+                Directory.Exists(source)
+                    ? $"{Path.GetFileName(source)}-{Guid.NewGuid():N}"
+                    : $"{Path.GetFileNameWithoutExtension(source)}-{Guid.NewGuid():N}{Path.GetExtension(source)}")).ToList();
+        }
+
+        private static void CopyDirectoryRecursively(string sourceDirectory, string destinationDirectory)
+        {
+            Directory.CreateDirectory(destinationDirectory);
+            foreach (string file in Directory.EnumerateFiles(sourceDirectory))
+                File.Copy(file, Path.Combine(destinationDirectory, Path.GetFileName(file)));
+            foreach (string directory in Directory.EnumerateDirectories(sourceDirectory))
+                CopyDirectoryRecursively(directory, Path.Combine(destinationDirectory, Path.GetFileName(directory)));
         }
 
         private static T? FindVisualParent<T>(DependencyObject? child) where T : DependencyObject
@@ -829,6 +1123,9 @@ namespace LivePhotoViewer.WPF
             _previousFocusedPhotoId = null;
             _selectedPhotoIds.Clear();
             _selectionAnchorId = null;
+            _selectedDirectoryPaths.Clear();
+            _directorySelectionAnchorPath = null;
+            _activeResourceSelectionSurface = ResourceSelectionSurface.Gallery;
             _selectedTag = null;
             _cardMap.Clear();
             _thumbnailMap.Clear();
@@ -1054,13 +1351,26 @@ namespace LivePhotoViewer.WPF
             }
             SortDirectoryNodes(nodes[rootPath]);
 
+            var availablePaths = nodes.Values.Select(node => node.FullPath)
+                .Concat(nodes.Values.SelectMany(node => node.Children)
+                    .Where(node => node.IsMediaFile)
+                    .Select(node => node.FullPath))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            _selectedDirectoryPaths.RemoveWhere(path => !availablePaths.Contains(path));
+            if (_directorySelectionAnchorPath != null && !availablePaths.Contains(_directorySelectionAnchorPath))
+                _directorySelectionAnchorPath = null;
+
             if (!nodes.ContainsKey(_browsingDirectory)) _browsingDirectory = rootPath;
             foreach (DirectoryNode node in nodes.Values)
             {
                 node.IsSelected = string.Equals(node.FullPath, _browsingDirectory, StringComparison.OrdinalIgnoreCase);
+                node.IsResourceSelected = _selectedDirectoryPaths.Contains(node.FullPath);
                 node.IsExpanded = string.Equals(node.FullPath, rootPath, StringComparison.OrdinalIgnoreCase)
                     || IsSameOrDescendant(_browsingDirectory, node.FullPath);
             }
+            foreach (DirectoryNode mediaNode in nodes.Values.SelectMany(node => node.Children)
+                         .Where(node => node.IsMediaFile))
+                mediaNode.IsResourceSelected = _selectedDirectoryPaths.Contains(mediaNode.FullPath);
             _suppressDirectorySelection = true;
             DirectoryTreeView.ItemsSource = new[] { nodes[rootPath] };
             _suppressDirectorySelection = false;
@@ -1105,7 +1415,11 @@ namespace LivePhotoViewer.WPF
             LibraryPathText.Text = _browsingDirectory;
             UpdateFilterVisuals();
             RenderGallery();
-            SelectPhoto(photo, ModifierKeys.None);
+            SetFocusedPhoto(photo);
+            RefreshPhotoSelectionVisuals();
+            SetStatus(_selectedDirectoryPaths.Count > 1
+                ? $"已选择 {_selectedDirectoryPaths.Count:N0} 个资源"
+                : $"当前照片：{photo.FileName}");
             Dispatcher.BeginInvoke(new Action(() => ScrollToPhoto(photo.StableId)));
         }
 
@@ -1444,6 +1758,8 @@ namespace LivePhotoViewer.WPF
 
         private void SelectPhoto(PhotoItem photo, ModifierKeys modifiers)
         {
+            _activeResourceSelectionSurface = ResourceSelectionSurface.Gallery;
+            ClearDirectorySelection();
             bool extendRange = modifiers.HasFlag(ModifierKeys.Shift);
             bool toggle = modifiers.HasFlag(ModifierKeys.Control);
             if (extendRange && _selectionAnchorId != null)
@@ -1500,6 +1816,8 @@ namespace LivePhotoViewer.WPF
         private void SelectAllVisiblePhotos()
         {
             if (_visiblePhotos.Count == 0) return;
+            _activeResourceSelectionSurface = ResourceSelectionSurface.Gallery;
+            ClearDirectorySelection();
             _selectedPhotoIds.Clear();
             foreach (PhotoItem photo in _visiblePhotos) _selectedPhotoIds.Add(photo.StableId);
             _selectionAnchorId = _visiblePhotos[0].StableId;
@@ -2654,7 +2972,7 @@ namespace LivePhotoViewer.WPF
 
             if (control && e.Key == Key.C)
             {
-                CopySelectedPhotos();
+                CopyActiveResourceSelection();
                 e.Handled = true;
                 return;
             }
@@ -2666,10 +2984,15 @@ namespace LivePhotoViewer.WPF
             }
             if (control && e.Key == Key.A)
             {
-                SelectAllVisiblePhotos();
+                if (_activeResourceSelectionSurface == ResourceSelectionSurface.DirectoryTree)
+                    SelectAllVisibleDirectoryNodes();
+                else
+                    SelectAllVisiblePhotos();
                 e.Handled = true;
                 return;
             }
+
+            if (HandleDirectoryTreeKeyboard(e, shift)) return;
 
             if (_visiblePhotos.Count == 0) return;
             int current = _focusedPhotoId == null ? -1 : _visiblePhotos.FindIndex(photo =>

@@ -11,6 +11,7 @@ namespace LivePhotoViewer.WPF.Models
     {
         private bool _isSelected;
         private bool _isExpanded;
+        private bool _isResourceSelected;
 
         public string Name { get; set; } = string.Empty;
         public string FullPath { get; set; } = string.Empty;
@@ -27,6 +28,11 @@ namespace LivePhotoViewer.WPF.Models
         {
             get => _isExpanded;
             set => SetField(ref _isExpanded, value);
+        }
+        public bool IsResourceSelected
+        {
+            get => _isResourceSelected;
+            set => SetField(ref _isResourceSelected, value);
         }
         public int PhotoCount { get; set; }
         public int TotalPhotoCount { get; set; }

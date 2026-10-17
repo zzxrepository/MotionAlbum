@@ -25,6 +25,7 @@ enum LibraryResourceError: LocalizedError {
     case destinationExists(String)
     case cannotMoveLibraryRoot
     case cannotMoveIntoItself
+    case cannotCopyIntoItself
     case alreadyInDestination
 
     var errorDescription: String? {
@@ -39,6 +40,8 @@ enum LibraryResourceError: LocalizedError {
             return "不能移动当前打开的图库根目录。"
         case .cannotMoveIntoItself:
             return "不能把文件夹移动到它自己或它的子目录中。"
+        case .cannotCopyIntoItself:
+            return "不能把文件夹复制到它自己或它的子目录中。"
         case .alreadyInDestination:
             return "文件已经位于所选目录中。"
         }
@@ -612,6 +615,12 @@ final class PhotoLibrary: ObservableObject {
             .map { $0.map(\.standardizedFileURL).filter { FileManager.default.fileExists(atPath: $0.path) } }
             .filter { $0.isEmpty == false }
         guard sourceBundles.isEmpty == false else { return 0 }
+
+        for source in sourceBundles.flatMap({ $0 }) where Self.isDirectory(source) {
+            guard Self.isPath(destinationDirectory.path, equalToOrDescendantOf: source.path) == false else {
+                throw LibraryResourceError.cannotCopyIntoItself
+            }
+        }
 
         try await Task.detached(priority: .userInitiated) {
             var copiedURLs: [URL] = []
@@ -1241,6 +1250,12 @@ final class PhotoLibrary: ObservableObject {
             default: suffix = " 副本 \(copyNumber)"
             }
             let destinations = sourceURLs.map { source -> URL in
+                if Self.isDirectory(source) {
+                    return destinationDirectory.appendingPathComponent(
+                        source.lastPathComponent + suffix,
+                        isDirectory: true
+                    )
+                }
                 let stem = source.deletingPathExtension().lastPathComponent
                 let fileName = "\(stem)\(suffix)"
                 return destinationDirectory
@@ -1254,10 +1269,22 @@ final class PhotoLibrary: ObservableObject {
             }
         }
         return sourceURLs.map {
-            destinationDirectory
+            if Self.isDirectory($0) {
+                return destinationDirectory.appendingPathComponent(
+                    "\($0.lastPathComponent)-\(UUID().uuidString)",
+                    isDirectory: true
+                )
+            }
+            return destinationDirectory
                 .appendingPathComponent("\($0.deletingPathExtension().lastPathComponent)-\(UUID().uuidString)")
                 .appendingPathExtension($0.pathExtension)
         }
+    }
+
+    nonisolated private static func isDirectory(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
     }
 
     nonisolated private static let imageExtensions = Set([

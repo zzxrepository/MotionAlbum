@@ -196,6 +196,7 @@
                                     <TreeView x:Name="DirectoryTreeView"
                                               SelectedItemChanged="DirectoryTreeView_SelectedItemChanged"
                                               ContextMenuOpening="DirectoryTreeView_ContextMenuOpening"
+                                              PreviewMouseLeftButtonDown="DirectoryTreeView_PreviewMouseLeftButtonDown"
                                               PreviewMouseRightButtonDown="DirectoryTreeView_PreviewMouseRightButtonDown"
                                               BorderThickness="0"
                                               Background="Transparent"
@@ -203,16 +204,29 @@
                                               ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                                         <TreeView.ItemTemplate>
                                             <HierarchicalDataTemplate ItemsSource="{Binding Children}">
-                                                <DockPanel ToolTip="{Binding ToolTipText}">
-                                                    <TextBlock Text="{Binding IconText}" Width="20" Foreground="{DynamicResource SubTextBrush}"/>
-                                                    <TextBlock Text="{Binding DisplayText}" TextTrimming="CharacterEllipsis"/>
-                                                </DockPanel>
+                                                <Border Padding="4,3" CornerRadius="5" ToolTip="{Binding ToolTipText}">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border">
+                                                            <Setter Property="Background" Value="Transparent"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsResourceSelected}" Value="True">
+                                                                    <Setter Property="Background" Value="#303B82F6"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                    <DockPanel>
+                                                        <TextBlock Text="{Binding IconText}" Width="20" Foreground="{DynamicResource SubTextBrush}"/>
+                                                        <TextBlock Text="{Binding DisplayText}" TextTrimming="CharacterEllipsis"/>
+                                                    </DockPanel>
+                                                </Border>
                                             </HierarchicalDataTemplate>
                                         </TreeView.ItemTemplate>
                                         <TreeView.ItemContainerStyle>
                                             <Style TargetType="TreeViewItem">
                                                 <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
                                                 <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}"/>
+                                                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
                                             </Style>
                                         </TreeView.ItemContainerStyle>
                                         <TreeView.ContextMenu>
