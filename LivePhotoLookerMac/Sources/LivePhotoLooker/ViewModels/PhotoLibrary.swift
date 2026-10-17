@@ -600,6 +600,45 @@ final class PhotoLibrary: ObservableObject {
         reload(selecting: destinationDirectory)
     }
 
+    @discardableResult
+    func copyResourceBundles(_ bundles: [[URL]], to destinationDirectory: URL) async throws -> Int {
+        guard let currentFolder else { throw CocoaError(.fileNoSuchFile) }
+        let destinationDirectory = destinationDirectory.standardizedFileURL
+        guard Self.isPath(destinationDirectory.path, equalToOrDescendantOf: currentFolder.path) else {
+            throw LibraryResourceError.outsideLibrary
+        }
+
+        let sourceBundles = bundles
+            .map { $0.map(\.standardizedFileURL).filter { FileManager.default.fileExists(atPath: $0.path) } }
+            .filter { $0.isEmpty == false }
+        guard sourceBundles.isEmpty == false else { return 0 }
+
+        try await Task.detached(priority: .userInitiated) {
+            var copiedURLs: [URL] = []
+            do {
+                for sources in sourceBundles {
+                    let destinations = Self.uniqueCopyDestinations(
+                        for: sources,
+                        in: destinationDirectory
+                    )
+                    for (source, destination) in zip(sources, destinations) {
+                        try FileManager.default.copyItem(at: source, to: destination)
+                        copiedURLs.append(destination)
+                    }
+                }
+            } catch {
+                for copiedURL in copiedURLs.reversed() {
+                    try? FileManager.default.removeItem(at: copiedURL)
+                }
+                throw error
+            }
+        }.value
+
+        statusMessage = "已复制 \(sourceBundles.count) 个媒体项目到 \(destinationDirectory.lastPathComponent)"
+        reload(selecting: destinationDirectory)
+        return sourceBundles.count
+    }
+
     func moveDirectory(_ directory: PhotoDirectory, to destinationDirectory: URL) throws {
         guard let currentFolder else { throw CocoaError(.fileNoSuchFile) }
         let source = directory.url.standardizedFileURL
@@ -1186,6 +1225,38 @@ final class PhotoLibrary: ObservableObject {
                 try? fileManager.moveItem(at: pair.destination, to: pair.source)
             }
             throw error
+        }
+    }
+
+    nonisolated private static func uniqueCopyDestinations(
+        for sourceURLs: [URL],
+        in destinationDirectory: URL
+    ) -> [URL] {
+        let fileManager = FileManager.default
+        for copyNumber in 0...10_000 {
+            let suffix: String
+            switch copyNumber {
+            case 0: suffix = ""
+            case 1: suffix = " 副本"
+            default: suffix = " 副本 \(copyNumber)"
+            }
+            let destinations = sourceURLs.map { source -> URL in
+                let stem = source.deletingPathExtension().lastPathComponent
+                let fileName = "\(stem)\(suffix)"
+                return destinationDirectory
+                    .appendingPathComponent(fileName)
+                    .appendingPathExtension(source.pathExtension)
+            }
+            let paths = destinations.map { $0.standardizedFileURL.path }
+            if Set(paths).count == paths.count,
+               paths.allSatisfy({ fileManager.fileExists(atPath: $0) == false }) {
+                return destinations
+            }
+        }
+        return sourceURLs.map {
+            destinationDirectory
+                .appendingPathComponent("\($0.deletingPathExtension().lastPathComponent)-\(UUID().uuidString)")
+                .appendingPathExtension($0.pathExtension)
         }
     }
 

@@ -13,14 +13,17 @@ namespace LivePhotoViewer.WPF.Controls
     public partial class ThumbnailCard : UserControl
     {
         private static readonly Brush FocusBrush = new SolidColorBrush(Color.FromRgb(245, 158, 11));
+        private static readonly Brush SelectionBrush = new SolidColorBrush(Color.FromRgb(37, 99, 235));
         private readonly PhotoItem _photo;
         private bool _isFocused;
+        private bool _isResourceSelected;
         private bool _isShowcasePreviewActive;
         private int _showcaseLoadVersion;
         private BitmapSource? _thumbnailSource;
 
         public string FilePath => _photo.FilePath;
         public PhotoItem Photo => _photo;
+        public ModifierKeys LastSelectionModifiers { get; private set; }
 
         public bool IsFavorite
         {
@@ -35,6 +38,7 @@ namespace LivePhotoViewer.WPF.Controls
         public event EventHandler<string>? PhotoFocused;
         public event EventHandler<string>? PhotoOpened;
         public event EventHandler<string>? FavoriteToggled;
+        public event EventHandler<string>? CopyRequested;
         public event EventHandler<string>? RevealRequested;
         public event EventHandler<string>? MoveRequested;
         public event EventHandler<string>? TrashRequested;
@@ -54,11 +58,12 @@ namespace LivePhotoViewer.WPF.Controls
             MouseDoubleClick += Card_MouseDoubleClick;
             MouseEnter += (_, _) =>
             {
-                if (!_isFocused) CardBorder.BorderBrush = (Brush)FindResource("HoverBorderBrush");
+                if (!_isFocused && !_isResourceSelected)
+                    CardBorder.BorderBrush = (Brush)FindResource("HoverBorderBrush");
             };
             MouseLeave += (_, _) =>
             {
-                if (!_isFocused) CardBorder.BorderBrush = (Brush)FindResource("BorderBrush");
+                UpdateSelectionBorder();
             };
             ContextMenu = BuildContextMenu();
         }
@@ -151,8 +156,14 @@ namespace LivePhotoViewer.WPF.Controls
         {
             _isFocused = focused;
             FocusBadge.Visibility = focused ? Visibility.Visible : Visibility.Collapsed;
-            CardBorder.BorderBrush = focused ? FocusBrush : (Brush)FindResource("BorderBrush");
-            CardBorder.BorderThickness = focused ? new Thickness(3) : new Thickness(1);
+            UpdateSelectionBorder();
+        }
+
+        public void SetResourceSelected(bool selected)
+        {
+            _isResourceSelected = selected;
+            SelectionBadge.Visibility = selected ? Visibility.Visible : Visibility.Collapsed;
+            UpdateSelectionBorder();
         }
 
         public void SetTags(System.Collections.Generic.List<string> tags)
@@ -174,7 +185,8 @@ namespace LivePhotoViewer.WPF.Controls
 
         private void Card_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
-            if (FindVisualParent<Button>(e.OriginalSource as DependencyObject) != null) return;
+            if (e.ClickCount > 1 || FindVisualParent<Button>(e.OriginalSource as DependencyObject) != null) return;
+            LastSelectionModifiers = Keyboard.Modifiers;
             PhotoFocused?.Invoke(this, FilePath);
         }
 
@@ -211,6 +223,9 @@ namespace LivePhotoViewer.WPF.Controls
             var trash = new MenuItem { Header = "移入回收站" };
             trash.Click += (_, _) => TrashRequested?.Invoke(this, FilePath);
             menu.Items.Add(open);
+            var copy = new MenuItem { Header = "复制", InputGestureText = "Ctrl+C" };
+            copy.Click += (_, _) => CopyRequested?.Invoke(this, FilePath);
+            menu.Items.Add(copy);
             menu.Items.Add(favorite);
             menu.Items.Add(new Separator());
             menu.Items.Add(move);
@@ -218,6 +233,16 @@ namespace LivePhotoViewer.WPF.Controls
             menu.Items.Add(trash);
             menu.Opened += (_, _) => favorite.Header = _photo.IsFavorite ? "取消喜欢" : "加入我喜欢";
             return menu;
+        }
+
+        private void UpdateSelectionBorder()
+        {
+            CardBorder.BorderBrush = _isResourceSelected
+                ? SelectionBrush
+                : _isFocused ? FocusBrush : (Brush)FindResource("BorderBrush");
+            CardBorder.BorderThickness = _isResourceSelected || _isFocused
+                ? new Thickness(3)
+                : new Thickness(1);
         }
 
         private void UpdateFavoriteStyle()

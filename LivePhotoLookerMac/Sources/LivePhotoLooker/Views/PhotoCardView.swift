@@ -4,7 +4,8 @@ import SwiftUI
 struct PhotoCardView: View {
     @ObservedObject var item: PhotoItem
     let onOpen: () -> Void
-    let onFocus: () -> Void
+    let onFocus: (NSEvent.ModifierFlags) -> Void
+    let onCopy: () -> Void
     let onToggleSelection: () -> Void
     let onReveal: () -> Void
     let onMove: () -> Void
@@ -12,6 +13,7 @@ struct PhotoCardView: View {
     let thumbnailSize: CGFloat
     let isShowcaseMode: Bool
     let isFocused: Bool
+    let isResourceSelected: Bool
     let isInteractionDisabled: Bool
 
     @State private var thumbnail: NSImage?
@@ -46,7 +48,7 @@ struct PhotoCardView: View {
         .contentShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
         .onTapGesture {
             guard !isInteractionDisabled else { return }
-            onFocus()
+            onFocus(NSEvent.modifierFlags)
         }
         .simultaneousGesture(TapGesture(count: 2).onEnded {
             guard !isInteractionDisabled else { return }
@@ -56,8 +58,11 @@ struct PhotoCardView: View {
         .animation(.easeOut(duration: 0.16), value: isHovering)
         .animation(.easeInOut(duration: 0.16), value: item.isSelected)
         .animation(.easeInOut(duration: 0.16), value: isFocused)
+        .animation(.easeInOut(duration: 0.12), value: isResourceSelected)
         .contextMenu {
             Button("查看") { onOpen() }
+                .disabled(isInteractionDisabled)
+            Button("复制") { onCopy() }
                 .disabled(isInteractionDisabled)
             Button(item.isSelected ? "取消喜欢" : "加入我喜欢") { onToggleSelection() }
                 .disabled(isInteractionDisabled)
@@ -116,6 +121,16 @@ struct PhotoCardView: View {
                     .padding(showsDetails ? 8 : 5)
             }
 
+            if isResourceSelected {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: showsDetails ? 20 : 17, weight: .semibold))
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, Color.accentColor)
+                    .shadow(color: .black.opacity(0.28), radius: 2, y: 1)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(showsDetails ? 8 : 5)
+            }
+
             Button(action: onToggleSelection) {
                 Image(systemName: item.isSelected ? "heart.fill" : "heart")
                     .font(.system(size: selectionIconSize, weight: .semibold))
@@ -132,7 +147,7 @@ struct PhotoCardView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                 .padding(showsDetails ? 8 : 5)
 
-            if showsDetails == false, item.tags.isEmpty == false {
+            if showsDetails == false, item.tags.isEmpty == false, isResourceSelected == false {
                 compactTagIndicator
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                     .padding(5)
@@ -239,7 +254,11 @@ struct PhotoCardView: View {
                     lineWidth: 1
                 )
 
-            if isFocused {
+            if isResourceSelected {
+                RoundedRectangle(cornerRadius: cardCornerRadius + 2, style: .continuous)
+                    .stroke(Color.accentColor.opacity(0.98), lineWidth: showsDetails ? 4 : 3)
+                    .padding(showsDetails ? -4 : -3)
+            } else if isFocused {
                 RoundedRectangle(cornerRadius: cardCornerRadius + 2, style: .continuous)
                     .stroke(Color.orange.opacity(0.96), lineWidth: showsDetails ? 4 : 3)
                     .padding(showsDetails ? -4 : -3)

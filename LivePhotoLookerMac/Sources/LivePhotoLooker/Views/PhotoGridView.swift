@@ -10,6 +10,7 @@ struct PhotoGridView: View {
     let scrollTargetToken: Int
     let scrollToTopToken: Int
     let focusedItemID: String?
+    let selectedItemIDs: Set<String>
     let groupByTime: Bool
     let onThumbnailSizeChange: (CGFloat) -> Void
     let onOpen: (PhotoItem) -> Void
@@ -17,7 +18,8 @@ struct PhotoGridView: View {
     let onReveal: (PhotoItem) -> Void
     let onMove: (PhotoItem) -> Void
     let onTrash: (PhotoItem) -> Void
-    let onFocus: (PhotoItem) -> Void
+    let onFocus: (PhotoItem, NSEvent.ModifierFlags) -> Void
+    let onCopy: (PhotoItem?) -> Void
     let isInteractionDisabled: Bool
     let isKeyboardNavigationEnabled: Bool
 
@@ -109,9 +111,10 @@ struct PhotoGridView: View {
                 .background {
                     GalleryKeyboardMonitor(
                         isEnabled: isKeyboardNavigationEnabled,
-                        onAction: { action in
+                        onAction: { action, modifiers in
                             handleKeyboardAction(
                                 action,
+                                modifiers: modifiers,
                                 availableWidth: geometry.size.width,
                                 proxy: proxy
                             )
@@ -153,6 +156,7 @@ struct PhotoGridView: View {
 
     private func handleKeyboardAction(
         _ action: GalleryKeyboardAction,
+        modifiers: NSEvent.ModifierFlags,
         availableWidth: CGFloat,
         proxy: ScrollViewProxy
     ) {
@@ -168,7 +172,7 @@ struct PhotoGridView: View {
 
         let columnCount = estimatedColumnCount(availableWidth: availableWidth)
         guard let target = navigationTarget(for: action, columnCount: columnCount) else { return }
-        onFocus(target)
+        onFocus(target, modifiers)
 
         DispatchQueue.main.async {
             withAnimation(.easeInOut(duration: 0.12)) {
@@ -275,7 +279,8 @@ struct PhotoGridView: View {
                 PhotoCardView(
                     item: item,
                     onOpen: { onOpen(item) },
-                    onFocus: { onFocus(item) },
+                    onFocus: { onFocus(item, $0) },
+                    onCopy: { onCopy(item) },
                     onToggleSelection: { onToggleSelection(item) },
                     onReveal: { onReveal(item) },
                     onMove: { onMove(item) },
@@ -283,6 +288,7 @@ struct PhotoGridView: View {
                     thumbnailSize: cardWidth,
                     isShowcaseMode: isShowcaseMode,
                     isFocused: item.id == focusedItemID,
+                    isResourceSelected: selectedItemIDs.contains(item.id),
                     isInteractionDisabled: isInteractionDisabled
                 )
                 .id(item.id)
@@ -374,7 +380,7 @@ private enum GalleryKeyboardAction: Equatable {
 
 private struct GalleryKeyboardMonitor: NSViewRepresentable {
     let isEnabled: Bool
-    let onAction: (GalleryKeyboardAction) -> Void
+    let onAction: (GalleryKeyboardAction, NSEvent.ModifierFlags) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(isEnabled: isEnabled, onAction: onAction)
@@ -397,12 +403,12 @@ private struct GalleryKeyboardMonitor: NSViewRepresentable {
 
     final class Coordinator {
         var isEnabled: Bool
-        var onAction: (GalleryKeyboardAction) -> Void
+        var onAction: (GalleryKeyboardAction, NSEvent.ModifierFlags) -> Void
         private var monitor: Any?
 
         init(
             isEnabled: Bool,
-            onAction: @escaping (GalleryKeyboardAction) -> Void
+            onAction: @escaping (GalleryKeyboardAction, NSEvent.ModifierFlags) -> Void
         ) {
             self.isEnabled = isEnabled
             self.onAction = onAction
@@ -419,7 +425,7 @@ private struct GalleryKeyboardMonitor: NSViewRepresentable {
                     return event
                 }
 
-                self.onAction(action)
+                self.onAction(action, event.modifierFlags)
                 return nil
             }
         }

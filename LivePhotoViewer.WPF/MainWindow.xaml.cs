@@ -52,6 +52,10 @@ namespace LivePhotoViewer.WPF
         private string _tagSidebarSignature = string.Empty;
         private string? _focusedPhotoId;
         private string? _previousFocusedPhotoId;
+        private readonly HashSet<string> _selectedPhotoIds = new(StringComparer.OrdinalIgnoreCase);
+        private string? _selectionAnchorId;
+        private List<List<string>> _copiedResourceBundles = new();
+        private List<string> _copiedClipboardPaths = new();
         private double _galleryCardSize = 126;
         private bool _isSidebarVisible = true;
         private const double DefaultSidebarWidth = 238;
@@ -168,6 +172,8 @@ namespace LivePhotoViewer.WPF
         private void IncludeSubfoldersCheckBox_Click(object sender, RoutedEventArgs e)
         {
             if (!Directory.Exists(_currentDirectory)) return;
+            _selectedPhotoIds.Clear();
+            _selectionAnchorId = null;
             _focusedPhotoId = null;
             _previousFocusedPhotoId = null;
             _selectedTag = null;
@@ -186,6 +192,8 @@ namespace LivePhotoViewer.WPF
             }
             if (!Directory.Exists(node.FullPath)) return;
             node.IsExpanded = node.Children.Count > 0;
+            _selectedPhotoIds.Clear();
+            _selectionAnchorId = null;
             _browsingDirectory = Path.GetFullPath(node.FullPath);
             _focusedPhotoId = null;
             _previousFocusedPhotoId = null;
@@ -268,6 +276,10 @@ namespace LivePhotoViewer.WPF
                 var create = new MenuItem { Header = "新建子文件夹…" };
                 create.Click += BtnNewFolder_Click;
                 menu.Items.Add(create);
+
+                var paste = new MenuItem { Header = "粘贴到此文件夹", InputGestureText = "Ctrl+V" };
+                paste.Click += async (_, _) => await PasteCopiedPhotosAsync(node.FullPath);
+                menu.Items.Add(paste);
 
                 if (!string.Equals(NormalizeDirectoryPath(node.FullPath), NormalizeDirectoryPath(_currentDirectory), StringComparison.OrdinalIgnoreCase))
                 {
@@ -414,6 +426,190 @@ namespace LivePhotoViewer.WPF
             _tagStore.RemoveAll(photo.Directory, photo.FileName);
             _holdFrameStore.Set(newPath, photo.HoldFrameTime);
             _holdFrameStore.Remove(photo.FilePath);
+        }
+
+        private void CopySelectedPhotos(PhotoItem? preferredPhoto = null)
+        {
+            if (_isWorking) return;
+            if (preferredPhoto != null && !_selectedPhotoIds.Contains(preferredPhoto.StableId))
+            {
+                SelectSinglePhoto(preferredPhoto);
+                SetFocusedPhoto(preferredPhoto);
+                RefreshPhotoSelectionVisuals();
+            }
+            if (_selectedPhotoIds.Count == 0 && _focusedPhotoId != null)
+                _selectedPhotoIds.Add(_focusedPhotoId);
+
+            List<PhotoItem> selected = _visiblePhotos
+                .Where(photo => _selectedPhotoIds.Contains(photo.StableId))
+                .ToList();
+            var bundles = selected
+                .Select(photo => photo.OriginalResourcePaths.Where(File.Exists).ToList())
+                .Where(bundle => bundle.Count > 0)
+                .ToList();
+            if (bundles.Count == 0)
+            {
+                SetStatus("请先选择要复制的照片");
+                return;
+            }
+
+            var paths = bundles.SelectMany(bundle => bundle)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            try
+            {
+                var fileDropList = new System.Collections.Specialized.StringCollection();
+                fileDropList.AddRange(paths.ToArray());
+                Clipboard.SetFileDropList(fileDropList);
+                _copiedResourceBundles = bundles;
+                _copiedClipboardPaths = paths
+                    .Select(Path.GetFullPath)
+                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                SetStatus($"已复制 {bundles.Count:N0} 个媒体项目，可在目标目录按 Ctrl+V 粘贴");
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"无法写入剪贴板：{ex.Message}");
+            }
+        }
+
+        private async Task PasteCopiedPhotosAsync(string? destinationDirectory = null)
+        {
+            if (_isWorking) return;
+            string destination = NormalizeDirectoryPath(
+                Directory.Exists(destinationDirectory) ? destinationDirectory! : _browsingDirectory);
+            if (!Directory.Exists(destination) || !IsSameOrDescendant(destination, _currentDirectory))
+            {
+                SetStatus("请选择当前图库中的目标目录");
+                return;
+            }
+
+            List<List<string>> bundles = ClipboardResourceBundles();
+            if (bundles.Count == 0)
+            {
+                SetStatus("剪贴板中没有可粘贴的照片或视频");
+                return;
+            }
+
+            try
+            {
+                SetWorking(true, 0, Math.Max(1, bundles.Count));
+                int copied = await Task.Run(() => CopyResourceBundles(bundles, destination));
+                _selectedPhotoIds.Clear();
+                _selectionAnchorId = null;
+                await OpenDirectoryAsync(_currentDirectory, remember: false, browsingDirectory: destination);
+                SetStatus($"已粘贴 {copied:N0} 个媒体项目到 {DirectoryName(destination)}");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "无法粘贴照片", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                SetWorking(false);
+            }
+        }
+
+        private List<List<string>> ClipboardResourceBundles()
+        {
+            try
+            {
+                if (!Clipboard.ContainsFileDropList()) return new List<List<string>>();
+                List<string> paths = Clipboard.GetFileDropList().Cast<string>()
+                    .Where(File.Exists)
+                    .Select(Path.GetFullPath)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                List<string> signature = paths
+                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (_copiedResourceBundles.Count > 0 &&
+                    signature.SequenceEqual(_copiedClipboardPaths, StringComparer.OrdinalIgnoreCase))
+                    return _copiedResourceBundles;
+                return GroupClipboardResources(paths);
+            }
+            catch
+            {
+                return new List<List<string>>();
+            }
+        }
+
+        private static List<List<string>> GroupClipboardResources(IEnumerable<string> paths)
+        {
+            List<string> media = paths
+                .Where(path => LivePhotoExtractor.IsSupportedImage(path) || LivePhotoExtractor.IsSupportedVideo(path))
+                .ToList();
+            var usedVideos = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var bundles = new List<List<string>>();
+            foreach (string image in media.Where(LivePhotoExtractor.IsSupportedImage))
+            {
+                var bundle = new List<string> { image };
+                string? sidecar = media.FirstOrDefault(path =>
+                    Path.GetExtension(path).Equals(".mov", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(Path.GetFileNameWithoutExtension(path), Path.GetFileNameWithoutExtension(image), StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(Path.GetDirectoryName(path), Path.GetDirectoryName(image), StringComparison.OrdinalIgnoreCase) &&
+                    !usedVideos.Contains(path));
+                if (sidecar != null)
+                {
+                    bundle.Add(sidecar);
+                    usedVideos.Add(sidecar);
+                }
+                bundles.Add(bundle);
+            }
+            bundles.AddRange(media
+                .Where(LivePhotoExtractor.IsSupportedVideo)
+                .Where(path => !usedVideos.Contains(path))
+                .Select(path => new List<string> { path }));
+            return bundles;
+        }
+
+        private static int CopyResourceBundles(IReadOnlyList<List<string>> bundles, string destinationDirectory)
+        {
+            var copiedPaths = new List<string>();
+            try
+            {
+                foreach (List<string> sources in bundles)
+                {
+                    List<string> destinations = UniqueCopyDestinations(sources, destinationDirectory);
+                    for (int index = 0; index < sources.Count; index++)
+                    {
+                        File.Copy(sources[index], destinations[index]);
+                        copiedPaths.Add(destinations[index]);
+                    }
+                }
+                return bundles.Count;
+            }
+            catch
+            {
+                foreach (string copiedPath in copiedPaths.AsEnumerable().Reverse())
+                {
+                    try { if (File.Exists(copiedPath)) File.Delete(copiedPath); } catch { }
+                }
+                throw;
+            }
+        }
+
+        private static List<string> UniqueCopyDestinations(IReadOnlyList<string> sources, string destinationDirectory)
+        {
+            for (int copyNumber = 0; copyNumber <= 10_000; copyNumber++)
+            {
+                string suffix = copyNumber switch
+                {
+                    0 => string.Empty,
+                    1 => " 副本",
+                    _ => $" 副本 {copyNumber}"
+                };
+                List<string> candidates = sources.Select(source => Path.Combine(
+                    destinationDirectory,
+                    Path.GetFileNameWithoutExtension(source) + suffix + Path.GetExtension(source))).ToList();
+                if (candidates.Distinct(StringComparer.OrdinalIgnoreCase).Count() == candidates.Count &&
+                    candidates.All(candidate => !File.Exists(candidate) && !Directory.Exists(candidate)))
+                    return candidates;
+            }
+            return sources.Select(source => Path.Combine(
+                destinationDirectory,
+                $"{Path.GetFileNameWithoutExtension(source)}-{Guid.NewGuid():N}{Path.GetExtension(source)}")).ToList();
         }
 
         private static T? FindVisualParent<T>(DependencyObject? child) where T : DependencyObject
@@ -631,6 +827,8 @@ namespace LivePhotoViewer.WPF
             if (remember) _recentFolders.Add(_currentDirectory);
             _focusedPhotoId = null;
             _previousFocusedPhotoId = null;
+            _selectedPhotoIds.Clear();
+            _selectionAnchorId = null;
             _selectedTag = null;
             _cardMap.Clear();
             _thumbnailMap.Clear();
@@ -907,8 +1105,7 @@ namespace LivePhotoViewer.WPF
             LibraryPathText.Text = _browsingDirectory;
             UpdateFilterVisuals();
             RenderGallery();
-            SetFocusedPhoto(photo);
-            SetStatus($"当前照片：{photo.FileName}");
+            SelectPhoto(photo, ModifierKeys.None);
             Dispatcher.BeginInvoke(new Action(() => ScrollToPhoto(photo.StableId)));
         }
 
@@ -1113,6 +1310,7 @@ namespace LivePhotoViewer.WPF
                         card.PhotoFocused += OnThumbnailFocused;
                         card.PhotoOpened += OnThumbnailOpened;
                         card.FavoriteToggled += OnFavoriteToggled;
+                        card.CopyRequested += OnCopyRequested;
                         card.MoveRequested += OnMoveRequested;
                         card.RevealRequested += OnRevealRequested;
                         card.TrashRequested += OnTrashRequested;
@@ -1122,12 +1320,13 @@ namespace LivePhotoViewer.WPF
                     card.Margin = new Thickness(IsShowcaseMode ? 4 : 4, 0, 4, IsShowcaseMode ? 18 : 8);
                     card.SetDisplaySize(cardWidth, IsShowcaseMode);
                     card.SetFocused(string.Equals(photo.StableId, _focusedPhotoId, StringComparison.OrdinalIgnoreCase));
+                    card.SetResourceSelected(_selectedPhotoIds.Contains(photo.StableId));
                     panel.Children.Add(card);
                 }
                 ThumbnailPanel.Children.Add(panel);
             }
             UpdateCounts();
-            VisibleCountText.Text = $"当前显示 {_visiblePhotos.Count:N0} 个";
+            UpdateVisibleCountText();
             ScheduleShowcasePreviewRefresh();
         }
 
@@ -1215,7 +1414,13 @@ namespace LivePhotoViewer.WPF
         {
             PhotoItem? photo = _photos.FirstOrDefault(item =>
                 string.Equals(item.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
-            if (photo != null) SetFocusedPhoto(photo);
+            if (photo != null)
+            {
+                ModifierKeys modifiers = sender is ThumbnailCard card
+                    ? card.LastSelectionModifiers
+                    : ModifierKeys.None;
+                SelectPhoto(photo, modifiers);
+            }
         }
 
         private void OnThumbnailOpened(object? sender, string filePath)
@@ -1235,6 +1440,93 @@ namespace LivePhotoViewer.WPF
             BtnReturnCurrent.Visibility = Visibility.Visible;
             BtnReturnPrevious.Visibility = string.IsNullOrWhiteSpace(_previousFocusedPhotoId)
                 ? Visibility.Collapsed : Visibility.Visible;
+        }
+
+        private void SelectPhoto(PhotoItem photo, ModifierKeys modifiers)
+        {
+            bool extendRange = modifiers.HasFlag(ModifierKeys.Shift);
+            bool toggle = modifiers.HasFlag(ModifierKeys.Control);
+            if (extendRange && _selectionAnchorId != null)
+            {
+                int anchor = _visiblePhotos.FindIndex(item =>
+                    string.Equals(item.StableId, _selectionAnchorId, StringComparison.OrdinalIgnoreCase));
+                int target = _visiblePhotos.FindIndex(item =>
+                    string.Equals(item.StableId, photo.StableId, StringComparison.OrdinalIgnoreCase));
+                if (anchor >= 0 && target >= 0)
+                {
+                    if (!toggle) _selectedPhotoIds.Clear();
+                    int start = Math.Min(anchor, target);
+                    int end = Math.Max(anchor, target);
+                    for (int index = start; index <= end; index++)
+                        _selectedPhotoIds.Add(_visiblePhotos[index].StableId);
+                }
+                else
+                {
+                    SelectSinglePhoto(photo);
+                }
+            }
+            else if (toggle)
+            {
+                if (!_selectedPhotoIds.Add(photo.StableId))
+                    _selectedPhotoIds.Remove(photo.StableId);
+                _selectionAnchorId = photo.StableId;
+            }
+            else
+            {
+                SelectSinglePhoto(photo);
+            }
+
+            SetFocusedPhoto(photo);
+            RefreshPhotoSelectionVisuals();
+            SetStatus(_selectedPhotoIds.Count > 1
+                ? $"已选择 {_selectedPhotoIds.Count:N0} 张照片"
+                : $"当前照片：{photo.FileName}");
+        }
+
+        private void SelectSinglePhoto(PhotoItem photo)
+        {
+            _selectedPhotoIds.Clear();
+            _selectedPhotoIds.Add(photo.StableId);
+            _selectionAnchorId = photo.StableId;
+        }
+
+        private void ClearPhotoSelection()
+        {
+            _selectedPhotoIds.Clear();
+            _selectionAnchorId = null;
+            RefreshPhotoSelectionVisuals();
+        }
+
+        private void SelectAllVisiblePhotos()
+        {
+            if (_visiblePhotos.Count == 0) return;
+            _selectedPhotoIds.Clear();
+            foreach (PhotoItem photo in _visiblePhotos) _selectedPhotoIds.Add(photo.StableId);
+            _selectionAnchorId = _visiblePhotos[0].StableId;
+            if (_focusedPhotoId == null) SetFocusedPhoto(_visiblePhotos[0]);
+            RefreshPhotoSelectionVisuals();
+            SetStatus($"已选择当前列表中的 {_selectedPhotoIds.Count:N0} 张照片");
+        }
+
+        private void RefreshPhotoSelectionVisuals()
+        {
+            foreach (var pair in _cardMap)
+                pair.Value.SetResourceSelected(_selectedPhotoIds.Contains(pair.Key));
+            UpdateVisibleCountText();
+        }
+
+        private void UpdateVisibleCountText()
+        {
+            VisibleCountText.Text = _selectedPhotoIds.Count > 0
+                ? $"已选 {_selectedPhotoIds.Count:N0} 个 · 当前显示 {_visiblePhotos.Count:N0} 个"
+                : $"当前显示 {_visiblePhotos.Count:N0} 个";
+        }
+
+        private void OnCopyRequested(object? sender, string filePath)
+        {
+            PhotoItem? photo = _photos.FirstOrDefault(item =>
+                string.Equals(item.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
+            CopySelectedPhotos(photo);
         }
 
         private void OnFavoriteToggled(object? sender, string filePath)
@@ -1284,6 +1576,8 @@ namespace LivePhotoViewer.WPF
         private void FilterButton_Click(object sender, RoutedEventArgs e)
         {
             if (sender is not Button button || button.Tag is not string value) return;
+            _selectedPhotoIds.Clear();
+            _selectionAnchorId = null;
             _filter = Enum.TryParse(value, out LibraryFilter parsed) ? parsed : LibraryFilter.All;
             _selectedTag = null;
             UpdateFilterVisuals();
@@ -1310,7 +1604,12 @@ namespace LivePhotoViewer.WPF
         {
             SearchHintText.Visibility = string.IsNullOrEmpty(SearchBox.Text)
                 ? Visibility.Visible : Visibility.Collapsed;
-            if (IsLoaded) RenderGallery();
+            if (IsLoaded)
+            {
+                _selectedPhotoIds.Clear();
+                _selectionAnchorId = null;
+                RenderGallery();
+            }
         }
 
         private void SortComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1999,6 +2298,8 @@ namespace LivePhotoViewer.WPF
         private void TagFilterButton_Click(object sender, RoutedEventArgs e)
         {
             if (sender is not Button button || button.Tag is not string tag) return;
+            _selectedPhotoIds.Clear();
+            _selectionAnchorId = null;
             _selectedTag = string.Equals(_selectedTag, tag, StringComparison.CurrentCultureIgnoreCase) ? null : tag;
             UpdateFilterVisuals();
             RenderGallery();
@@ -2351,6 +2652,25 @@ namespace LivePhotoViewer.WPF
                 return;
             }
 
+            if (control && e.Key == Key.C)
+            {
+                CopySelectedPhotos();
+                e.Handled = true;
+                return;
+            }
+            if (control && e.Key == Key.V)
+            {
+                _ = PasteCopiedPhotosAsync();
+                e.Handled = true;
+                return;
+            }
+            if (control && e.Key == Key.A)
+            {
+                SelectAllVisiblePhotos();
+                e.Handled = true;
+                return;
+            }
+
             if (_visiblePhotos.Count == 0) return;
             int current = _focusedPhotoId == null ? -1 : _visiblePhotos.FindIndex(photo =>
                 string.Equals(photo.StableId, _focusedPhotoId, StringComparison.OrdinalIgnoreCase));
@@ -2376,7 +2696,9 @@ namespace LivePhotoViewer.WPF
                 default: return;
             }
             target = Math.Clamp(target, 0, _visiblePhotos.Count - 1);
-            SetFocusedPhoto(_visiblePhotos[target]);
+            SelectPhoto(
+                _visiblePhotos[target],
+                shift ? ModifierKeys.Shift : ModifierKeys.None);
             ScrollToPhoto(_focusedPhotoId);
             e.Handled = true;
         }

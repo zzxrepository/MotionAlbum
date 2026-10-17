@@ -31,6 +31,101 @@ private enum DirectoryOutlineEntry: Identifiable {
     }
 }
 
+private struct ResourceClipboardKeyboardMonitor: NSViewRepresentable {
+    let isEnabled: Bool
+    let onCopy: () -> Void
+    let onPaste: () -> Void
+    let onSelectAll: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(
+            isEnabled: isEnabled,
+            onCopy: onCopy,
+            onPaste: onPaste,
+            onSelectAll: onSelectAll
+        )
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.install(for: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.isEnabled = isEnabled
+        context.coordinator.onCopy = onCopy
+        context.coordinator.onPaste = onPaste
+        context.coordinator.onSelectAll = onSelectAll
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.stop()
+    }
+
+    final class Coordinator {
+        var isEnabled: Bool
+        var onCopy: () -> Void
+        var onPaste: () -> Void
+        var onSelectAll: () -> Void
+        private var monitor: Any?
+
+        init(
+            isEnabled: Bool,
+            onCopy: @escaping () -> Void,
+            onPaste: @escaping () -> Void,
+            onSelectAll: @escaping () -> Void
+        ) {
+            self.isEnabled = isEnabled
+            self.onCopy = onCopy
+            self.onPaste = onPaste
+            self.onSelectAll = onSelectAll
+        }
+
+        func install(for hostView: NSView) {
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak hostView] event in
+                guard let self,
+                      self.isEnabled,
+                      event.window === hostView?.window,
+                      self.shouldYieldToFocusedControl(event.window?.firstResponder) == false else {
+                    return event
+                }
+                let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                let hasPrimaryModifier = flags.contains(.command) || flags.contains(.control)
+                guard hasPrimaryModifier,
+                      flags.intersection([.shift, .option]).isEmpty else {
+                    return event
+                }
+                switch event.keyCode {
+                case 8: self.onCopy()       // C
+                case 9: self.onPaste()      // V
+                case 0: self.onSelectAll()  // A
+                default: return event
+                }
+                return nil
+            }
+        }
+
+        func stop() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+
+        private func shouldYieldToFocusedControl(_ responder: NSResponder?) -> Bool {
+            if let textView = responder as? NSTextView, textView.isEditable {
+                return true
+            }
+            return responder is NSTextField
+                || responder is NSSearchField
+                || responder is NSComboBox
+        }
+
+        deinit { stop() }
+    }
+}
+
 private struct AppQuote: Identifiable, Equatable {
     let id = UUID()
     let text: String
@@ -135,6 +230,10 @@ struct ContentView: View {
     @State private var galleryScrollToTopToken = 0
     @State private var focusedGalleryItemID: String?
     @State private var focusedGalleryItemName: String?
+    @State private var selectedResourceItemIDs = Set<String>()
+    @State private var resourceSelectionAnchorID: String?
+    @State private var copiedResourceBundles: [[URL]] = []
+    @State private var copiedPasteboardPaths: [String] = []
     @State private var previousGalleryItemID: String?
     @State private var previousGalleryItemName: String?
     @State private var groupPhotosByTime = true
@@ -264,11 +363,19 @@ struct ContentView: View {
             collapseAllDirectories()
         }
         .onChange(of: library.currentFolder?.standardizedFileURL.path) { path in
+            clearResourceSelection()
             guard let path else {
                 expandedDirectoryPaths = []
                 return
             }
             expandedDirectoryPaths = [path]
+        }
+        .onChange(of: library.filteredPhotos.map(\.id)) { visibleIDs in
+            selectedResourceItemIDs.formIntersection(visibleIDs)
+            if let resourceSelectionAnchorID,
+               visibleIDs.contains(resourceSelectionAnchorID) == false {
+                self.resourceSelectionAnchorID = nil
+            }
         }
     }
 
@@ -717,6 +824,13 @@ struct ContentView: View {
                 .disabled(isWorking)
             }
 
+            Button {
+                pasteCopiedItems(into: directory.url)
+            } label: {
+                Label("粘贴到此文件夹", systemImage: "doc.on.clipboard")
+            }
+            .disabled(isWorking)
+
             Divider()
 
             Button {
@@ -746,6 +860,7 @@ struct ContentView: View {
         depth: Int
     ) -> some View {
         let isFocused = focusedGalleryItemID == item.id
+        let isResourceSelected = selectedResourceItemIDs.contains(item.id)
 
         return Button {
             focusDirectoryMedia(item, in: directory)
@@ -764,7 +879,9 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, minHeight: 26)
             .contentShape(Rectangle())
             .background(
-                isFocused ? Color.accentColor.opacity(0.13) : Color.clear,
+                isResourceSelected
+                    ? Color.accentColor.opacity(0.18)
+                    : (isFocused ? Color.orange.opacity(0.12) : Color.clear),
                 in: RoundedRectangle(cornerRadius: 6, style: .continuous)
             )
         }
@@ -779,6 +896,13 @@ struct ContentView: View {
                 openViewer(item)
             } label: {
                 Label("查看", systemImage: "eye")
+            }
+            .disabled(isWorking)
+
+            Button {
+                copyGalleryItems(preferredItem: item)
+            } label: {
+                Label("复制", systemImage: "doc.on.doc")
             }
             .disabled(isWorking)
 
@@ -1055,6 +1179,7 @@ struct ContentView: View {
                         scrollTargetToken: galleryScrollTargetToken,
                         scrollToTopToken: galleryScrollToTopToken,
                         focusedItemID: focusedGalleryItemID,
+                        selectedItemIDs: selectedResourceItemIDs,
                         groupByTime: groupPhotosByTime,
                         onThumbnailSizeChange: setGalleryThumbnailSize,
                         onOpen: openViewer,
@@ -1062,7 +1187,8 @@ struct ContentView: View {
                         onReveal: library.revealInFinder,
                         onMove: chooseMoveDestination,
                         onTrash: { requestTrashItems([$0], fallbackViewerItem: nil) },
-                        onFocus: { setFocusedGalleryItem($0) },
+                        onFocus: selectGalleryItem,
+                        onCopy: copyGalleryItems,
                         isInteractionDisabled: isWorking,
                         isKeyboardNavigationEnabled: viewerItem == nil && isWorking == false
                     )
@@ -1081,6 +1207,15 @@ struct ContentView: View {
             statusFooter
         }
         .padding(12)
+        .background {
+            ResourceClipboardKeyboardMonitor(
+                isEnabled: viewerItem == nil && isWorking == false,
+                onCopy: { copyGalleryItems(preferredItem: nil) },
+                onPaste: { pasteCopiedItems(into: selectedDirectoryURL) },
+                onSelectAll: selectAllVisibleGalleryItems
+            )
+            .accessibilityHidden(true)
+        }
     }
 
     private var libraryHeader: some View {
@@ -1247,6 +1382,10 @@ struct ContentView: View {
             Text(statusFooterMessage)
                 .lineLimit(1)
             Spacer()
+            if selectedResourceItemIDs.isEmpty == false {
+                Text("已选 \(selectedResourceItemIDs.count) 张")
+                    .foregroundStyle(Color.accentColor)
+            }
             Text("当前显示 \(library.filteredPhotos.count) 张")
         }
         .font(.caption)
@@ -1714,6 +1853,168 @@ struct ContentView: View {
         return confirmation.runModal() == .alertFirstButtonReturn
     }
 
+    private func selectGalleryItem(_ item: PhotoItem, modifiers: NSEvent.ModifierFlags) {
+        guard !isWorking else { return }
+        let flags = modifiers.intersection(.deviceIndependentFlagsMask)
+        let extendsRange = flags.contains(.shift)
+        let togglesItem = flags.contains(.command) || flags.contains(.control)
+        let visiblePhotos = library.filteredPhotos
+
+        if extendsRange,
+           let resourceSelectionAnchorID,
+           let anchorIndex = visiblePhotos.firstIndex(where: { $0.id == resourceSelectionAnchorID }),
+           let targetIndex = visiblePhotos.firstIndex(where: { $0.id == item.id }) {
+            let range = min(anchorIndex, targetIndex)...max(anchorIndex, targetIndex)
+            let rangeIDs = Set(range.map { visiblePhotos[$0].id })
+            if togglesItem {
+                selectedResourceItemIDs.formUnion(rangeIDs)
+            } else {
+                selectedResourceItemIDs = rangeIDs
+            }
+        } else if togglesItem {
+            if selectedResourceItemIDs.contains(item.id) {
+                selectedResourceItemIDs.remove(item.id)
+            } else {
+                selectedResourceItemIDs.insert(item.id)
+            }
+            resourceSelectionAnchorID = item.id
+        } else {
+            selectedResourceItemIDs = [item.id]
+            resourceSelectionAnchorID = item.id
+        }
+
+        setFocusedGalleryItem(item)
+        library.setStatus(selectionStatus(fallbackName: item.fileName))
+    }
+
+    private func selectAllVisibleGalleryItems() {
+        guard !isWorking, library.filteredPhotos.isEmpty == false else { return }
+        selectedResourceItemIDs = Set(library.filteredPhotos.map(\.id))
+        resourceSelectionAnchorID = library.filteredPhotos.first?.id
+        if focusedGalleryItemID == nil, let first = library.filteredPhotos.first {
+            setFocusedGalleryItem(first)
+        }
+        library.setStatus("已选择当前列表中的 \(selectedResourceItemIDs.count) 张照片")
+    }
+
+    private func clearResourceSelection() {
+        selectedResourceItemIDs.removeAll()
+        resourceSelectionAnchorID = nil
+    }
+
+    private func selectionStatus(fallbackName: String) -> String {
+        selectedResourceItemIDs.count > 1
+            ? "已选择 \(selectedResourceItemIDs.count) 张照片"
+            : "当前照片：\(fallbackName)"
+    }
+
+    private func copyGalleryItems(preferredItem: PhotoItem?) {
+        guard !isWorking else { return }
+        var selectedIDs = selectedResourceItemIDs
+        if let preferredItem, selectedIDs.contains(preferredItem.id) == false {
+            selectedIDs = [preferredItem.id]
+            selectedResourceItemIDs = selectedIDs
+            resourceSelectionAnchorID = preferredItem.id
+            setFocusedGalleryItem(preferredItem)
+        }
+        if selectedIDs.isEmpty, let focusedGalleryItemID {
+            selectedIDs = [focusedGalleryItemID]
+            selectedResourceItemIDs = selectedIDs
+        }
+
+        let items = library.filteredPhotos.filter { selectedIDs.contains($0.id) }
+        let bundles = items
+            .map { $0.originalResourceURLs.filter { FileManager.default.fileExists(atPath: $0.path) } }
+            .filter { $0.isEmpty == false }
+        guard bundles.isEmpty == false else {
+            library.setStatus("请先选择要复制的照片")
+            return
+        }
+
+        let urls = bundles.flatMap { $0 }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects(urls.map { $0 as NSURL })
+        copiedResourceBundles = bundles
+        copiedPasteboardPaths = urls.map { $0.standardizedFileURL.path }.sorted()
+        library.setStatus("已复制 \(bundles.count) 个媒体项目，可在目标目录按 ⌘V 粘贴")
+    }
+
+    private func pasteCopiedItems(into destination: URL?) {
+        guard let destination, !isWorking else { return }
+        let bundles = pasteboardResourceBundles()
+        guard bundles.isEmpty == false else {
+            library.setStatus("剪贴板中没有可粘贴的照片或视频")
+            return
+        }
+
+        isWorking = true
+        Task { @MainActor in
+            do {
+                let count = try await library.copyResourceBundles(bundles, to: destination)
+                clearResourceSelection()
+                expandedDirectoryPaths.insert(destination.standardizedFileURL.path)
+                library.setStatus("已粘贴 \(count) 个媒体项目到 \(destination.lastPathComponent)")
+            } catch {
+                alert = UserFacingAlert(title: "无法粘贴照片", message: error.localizedDescription)
+            }
+            isWorking = false
+        }
+    }
+
+    private func pasteboardResourceBundles() -> [[URL]] {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true
+        ]
+        let objects = NSPasteboard.general.readObjects(
+            forClasses: [NSURL.self],
+            options: options
+        ) ?? []
+        let urls = objects.compactMap { object -> URL? in
+            guard let url = object as? NSURL else { return nil }
+            return url as URL
+        }.map(\.standardizedFileURL)
+        let currentPaths = urls.map(\.path).sorted()
+        if copiedResourceBundles.isEmpty == false,
+           currentPaths == copiedPasteboardPaths {
+            return copiedResourceBundles
+        }
+        return Self.groupClipboardResources(urls)
+    }
+
+    private static func groupClipboardResources(_ urls: [URL]) -> [[URL]] {
+        let imageExtensions = Set(["jpg", "jpeg", "heic", "heif", "png", "webp", "tif", "tiff", "bmp"])
+        let videoExtensions = Set(["mov", "mp4", "m4v"])
+        let existing = urls.filter {
+            FileManager.default.fileExists(atPath: $0.path)
+                && (imageExtensions.contains($0.pathExtension.lowercased())
+                    || videoExtensions.contains($0.pathExtension.lowercased()))
+        }
+        var usedVideoPaths = Set<String>()
+        var bundles: [[URL]] = []
+
+        for image in existing where imageExtensions.contains(image.pathExtension.lowercased()) {
+            let stem = image.deletingPathExtension().lastPathComponent.lowercased()
+            let directory = image.deletingLastPathComponent().standardizedFileURL.path
+            var bundle = [image]
+            if let sidecar = existing.first(where: {
+                $0.pathExtension.lowercased() == "mov"
+                    && $0.deletingPathExtension().lastPathComponent.lowercased() == stem
+                    && $0.deletingLastPathComponent().standardizedFileURL.path == directory
+                    && usedVideoPaths.contains($0.path) == false
+            }) {
+                bundle.append(sidecar)
+                usedVideoPaths.insert(sidecar.path)
+            }
+            bundles.append(bundle)
+        }
+        for video in existing where videoExtensions.contains(video.pathExtension.lowercased())
+            && usedVideoPaths.contains(video.path) == false {
+            bundles.append([video])
+        }
+        return bundles
+    }
+
     private func openViewer(_ item: PhotoItem) {
         setFocusedGalleryItem(item)
         viewerItem = item
@@ -1735,7 +2036,7 @@ struct ContentView: View {
         library.selectTag(nil)
         library.searchText = ""
         library.selectBrowsingFolder(directory.url)
-        setFocusedGalleryItem(item)
+        selectGalleryItem(item, modifiers: [])
 
         DispatchQueue.main.async {
             guard library.filteredPhotos.contains(where: { $0.id == item.id }) else {
@@ -1771,6 +2072,7 @@ struct ContentView: View {
     private func resetViewerContext() {
         viewerItem = nil
         galleryScrollTargetID = nil
+        clearResourceSelection()
         focusedGalleryItemID = nil
         focusedGalleryItemName = nil
         previousGalleryItemID = nil

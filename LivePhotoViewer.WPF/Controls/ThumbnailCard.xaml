@@ -59,6 +59,23 @@
                         <TextBlock x:Name="MediaBadgeText" Foreground="White" FontSize="10" FontWeight="Bold"/>
                     </Border>
 
+                    <Border x:Name="SelectionBadge"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Bottom"
+                            Width="24"
+                            Height="24"
+                            Margin="8"
+                            Background="#2563EB"
+                            CornerRadius="12"
+                            Visibility="Collapsed">
+                        <TextBlock Text="✓"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   Foreground="White"
+                                   FontSize="14"
+                                   FontWeight="Bold"/>
+                    </Border>
+
                     <Button x:Name="FavoriteButton"
                             HorizontalAlignment="Right"
                             VerticalAlignment="Top"
