@@ -48,6 +48,7 @@ namespace LivePhotoViewer.WPF.Models
         public double? Longitude { get; set; }
         public string PlaceName { get; set; } = string.Empty;
         public double? HoldFrameTime { get; set; }
+        public int SavedRotationQuarterTurns { get; set; }
         public bool IsMetadataLoaded { get; set; }
         public bool IsLiveStatusKnown { get; set; }
         public List<string> Tags { get; set; } = new();

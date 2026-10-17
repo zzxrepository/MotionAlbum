@@ -103,6 +103,11 @@ struct PhotoCardView: View {
                     Image(nsImage: thumbnail)
                         .resizable()
                         .aspectRatio(contentMode: isShowcaseMode ? .fit : .fill)
+                        .frame(
+                            width: swapsRotatedDimensions ? imageHeight : thumbnailSize,
+                            height: swapsRotatedDimensions ? thumbnailSize : imageHeight
+                        )
+                        .rotationEffect(.degrees(Double(item.savedRotationQuarterTurns * 90)))
                         .frame(width: thumbnailSize, height: imageHeight)
                 } else if didFailThumbnail {
                     placeholder
@@ -380,6 +385,11 @@ struct PhotoCardView: View {
     private var thumbnailPixelSize: Int {
         let upperLimit = isShowcaseMode ? 2_200 : 1_100
         return max(220, min(upperLimit, Int((thumbnailSize * 2.4).rounded(.up))))
+    }
+
+    private var swapsRotatedDimensions: Bool {
+        let normalized = ((item.savedRotationQuarterTurns % 4) + 4) % 4
+        return normalized.isMultiple(of: 2) == false
     }
 
     private var showcaseAspectRatio: CGFloat {

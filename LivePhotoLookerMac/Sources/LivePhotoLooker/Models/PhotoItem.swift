@@ -69,6 +69,8 @@ final class PhotoItem: ObservableObject, Identifiable {
     @Published var isSelected: Bool
     @Published var tags: [String]
     @Published var holdFrameTime: Double?
+    /// 相册内的非破坏旋转。原始图片、内嵌视频和 Apple 配对 MOV 均不会被改写。
+    @Published var savedRotationQuarterTurns: Int
     @Published var placeName: String?
     @Published var isResolvingPlaceName = false
 
@@ -94,6 +96,7 @@ final class PhotoItem: ObservableObject, Identifiable {
         self.isSelected = isSelected
         self.tags = tags
         holdFrameTime = nil
+        savedRotationQuarterTurns = 0
     }
 
     var originalResourceURLs: [URL] {

@@ -1746,6 +1746,7 @@ struct ContentView: View {
             onRemoveTag: { library.removeTag($0, from: item) },
             onSetHoldFrame: { library.setHoldFrameTime($0, for: item) },
             onTrash: { requestTrashViewerItem(item) },
+            onSetSavedRotation: { library.setSavedRotation($0, for: item) },
             onDidSaveRotation: { destination in
                 viewerItem = nil
                 setFocusedGalleryItem(nil)

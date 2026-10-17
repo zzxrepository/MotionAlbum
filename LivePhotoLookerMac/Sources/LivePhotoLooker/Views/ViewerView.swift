@@ -14,6 +14,7 @@ struct ViewerView: View {
     let onRemoveTag: (String) -> Void
     let onSetHoldFrame: (Double?) -> Void
     let onTrash: () -> Void
+    let onSetSavedRotation: (Int) -> Void
     let onDidSaveRotation: (URL) -> Void
     let isLibraryBusy: Bool
 
@@ -130,7 +131,11 @@ struct ViewerView: View {
             isPresented: $showRotationSaveOptions,
             titleVisibility: .visible
         ) {
-            if protectsMotionResources == false {
+            if protectsMotionResources {
+                Button("保存实况旋转") {
+                    saveMotionRotation()
+                }
+            } else {
                 Button("覆盖原图", role: .destructive) {
                     saveRotation(overwriteOriginal: true)
                 }
@@ -141,7 +146,7 @@ struct ViewerView: View {
             Button("取消", role: .cancel) {}
         } message: {
             if protectsMotionResources {
-                Text("这是实况或可能包含动态资源的照片。为避免破坏内嵌视频或配套 MOV，只能另存为静态副本；原始实况照片不会被修改。")
+                Text("“保存实况旋转”会像手机相册一样保存可恢复的查看方向，并让封面与实况视频同步旋转；原始 JPG/HEIC、内嵌视频和配套 MOV 不会被改写。也可以另存为不含动态视频的静态副本。")
             } else {
                 Text("覆盖会直接改写磁盘上的原图；另存为会保留原文件。")
             }
@@ -158,8 +163,7 @@ struct ViewerView: View {
                 GeometryReader { proxy in
                     ZStack {
                         if showingVideo, let player {
-                            NativePlayerView(player: player)
-                                .frame(width: proxy.size.width, height: proxy.size.height)
+                            rotatedVideo(player, viewportSize: proxy.size)
                                 .onAppear { player.play() }
                         } else if let previewImage {
                             zoomableImage(previewImage, viewportSize: proxy.size)
@@ -183,7 +187,7 @@ struct ViewerView: View {
     }
 
     private func zoomableImage(_ image: NSImage, viewportSize: CGSize) -> some View {
-        let normalizedTurns = ((rotationQuarterTurns % 4) + 4) % 4
+        let normalizedTurns = displayRotationQuarterTurns
         let sourceWidth = max(1, image.size.width)
         let sourceHeight = max(1, image.size.height)
         let swapsDimensions = normalizedTurns.isMultiple(of: 2) == false
@@ -203,7 +207,7 @@ struct ViewerView: View {
                 .resizable()
                 .interpolation(.high)
                 .frame(width: fittedSourceWidth, height: fittedSourceHeight)
-                .rotationEffect(.degrees(Double(rotationQuarterTurns * 90)))
+                .rotationEffect(.degrees(Double(normalizedTurns * 90)))
                 .frame(width: fittedRotatedWidth, height: fittedRotatedHeight)
                 .scaleEffect(zoomScale)
                 .frame(
@@ -618,9 +622,17 @@ struct ViewerView: View {
         ((rotationQuarterTurns % 4) + 4) % 4 != 0
     }
 
+    private var displayRotationQuarterTurns: Int {
+        ((item.savedRotationQuarterTurns + rotationQuarterTurns) % 4 + 4) % 4
+    }
+
     private var protectsMotionResources: Bool {
         item.mediaKind == .image
-            && (item.companionVideoURL != nil || item.liveStatus != .still)
+            && (
+                item.companionVideoURL != nil
+                    || item.liveStatus != .still
+                    || item.savedRotationQuarterTurns != 0
+            )
     }
 
     private var videoToggleTitle: String {
@@ -646,6 +658,14 @@ struct ViewerView: View {
         guard canRotateImage else { return }
         stopVideo()
         rotationQuarterTurns = (rotationQuarterTurns + turns) % 4
+        resetZoom()
+    }
+
+    private func saveMotionRotation() {
+        guard hasPendingRotation, !isSavingRotation else { return }
+        let savedTurns = displayRotationQuarterTurns
+        onSetSavedRotation(savedTurns)
+        rotationQuarterTurns = 0
         resetZoom()
     }
 
@@ -678,7 +698,7 @@ struct ViewerView: View {
         }
 
         let sourceURL = item.url
-        let turns = rotationQuarterTurns
+        let turns = displayRotationQuarterTurns
         isSavingRotation = true
         Task { @MainActor in
             do {
@@ -691,6 +711,9 @@ struct ViewerView: View {
                     )
                 }.value
                 rotationQuarterTurns = 0
+                if overwriteOriginal && item.savedRotationQuarterTurns != 0 {
+                    onSetSavedRotation(0)
+                }
                 onDidSaveRotation(destinationURL)
             } catch {
                 errorMessage = "保存旋转结果失败：\(error.localizedDescription)"
@@ -707,6 +730,19 @@ struct ViewerView: View {
 
     private func clampedZoom(_ scale: Double) -> Double {
         min(maximumZoom, max(minimumZoom, scale))
+    }
+
+    private func rotatedVideo(_ player: AVPlayer, viewportSize: CGSize) -> some View {
+        let turns = displayRotationQuarterTurns
+        let swapsDimensions = turns.isMultiple(of: 2) == false
+        return NativePlayerView(player: player)
+            .frame(
+                width: swapsDimensions ? viewportSize.height : viewportSize.width,
+                height: swapsDimensions ? viewportSize.width : viewportSize.height
+            )
+            .rotationEffect(.degrees(Double(turns * 90)))
+            .frame(width: viewportSize.width, height: viewportSize.height)
+            .clipped()
     }
 
     private func addCurrentTag() {

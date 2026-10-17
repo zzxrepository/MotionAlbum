@@ -253,6 +253,81 @@ final class HoldFrameStore {
     }
 }
 
+/// 保存与 Photos 调整数据相同语义的“查看方向”：它只记录编辑结果，
+/// 不重新编码图片，也不会破坏 Motion Photo 尾部视频或 Apple Live Photo 配对关系。
+final class RotationStore {
+    private let queue = DispatchQueue(label: "MotionAlbum.RotationStore")
+    private var rotationsByFolder: [String: [String: Int]]
+    private let fileURL: URL
+
+    init() {
+        fileURL = AppDirectories.supportRoot.appendingPathComponent("rotations.json")
+        if let data = try? Data(contentsOf: fileURL),
+           let decoded = try? JSONDecoder().decode([String: [String: Int]].self, from: data) {
+            rotationsByFolder = decoded
+        } else {
+            rotationsByFolder = [:]
+        }
+    }
+
+    func rotations(in folder: URL) -> [String: Int] {
+        queue.sync { rotationsByFolder[folder.standardizedFileURL.path] ?? [:] }
+    }
+
+    func setRotation(_ quarterTurns: Int, fileName: String, folder: URL) {
+        queue.sync {
+            let folderKey = folder.standardizedFileURL.path
+            var folderRotations = rotationsByFolder[folderKey] ?? [:]
+            let normalized = Self.normalized(quarterTurns)
+            if normalized == 0 {
+                folderRotations.removeValue(forKey: fileName)
+            } else {
+                folderRotations[fileName] = normalized
+            }
+            if folderRotations.isEmpty {
+                rotationsByFolder.removeValue(forKey: folderKey)
+            } else {
+                rotationsByFolder[folderKey] = folderRotations
+            }
+            saveNow()
+        }
+    }
+
+    func remove(fileNames: Set<String>, in folder: URL) {
+        guard fileNames.isEmpty == false else { return }
+        queue.sync {
+            let folderKey = folder.standardizedFileURL.path
+            guard var folderRotations = rotationsByFolder[folderKey] else { return }
+            for fileName in fileNames {
+                folderRotations.removeValue(forKey: fileName)
+            }
+            if folderRotations.isEmpty {
+                rotationsByFolder.removeValue(forKey: folderKey)
+            } else {
+                rotationsByFolder[folderKey] = folderRotations
+            }
+            saveNow()
+        }
+    }
+
+    private static func normalized(_ quarterTurns: Int) -> Int {
+        ((quarterTurns % 4) + 4) % 4
+    }
+
+    private func saveNow() {
+        do {
+            try FileManager.default.createDirectory(
+                at: fileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let data = try JSONEncoder().encode(rotationsByFolder)
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            AppLogger.warning("保存非破坏旋转失败", error: error)
+        }
+    }
+}
+
 struct RecentFolderEntry: Identifiable, Equatable {
     let id: String
     let url: URL

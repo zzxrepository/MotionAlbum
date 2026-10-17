@@ -25,13 +25,14 @@ namespace LivePhotoViewer.WPF
     public partial class MainWindow : Window
     {
         private enum LibraryFilter { All, Live, Video, Favorite }
-        private enum RotationSaveChoice { Cancel, SaveAs, Overwrite }
+        private enum RotationSaveChoice { Cancel, SaveAdjustment, SaveAs, Overwrite }
         private enum ResourceSelectionSurface { Gallery, DirectoryTree }
 
         private readonly FavoritesManager _favoriteStore = new();
         private readonly TagsManager _tagStore = new();
         private readonly RecentFoldersManager _recentFolders = new();
         private readonly HoldFrameManager _holdFrameStore = new();
+        private readonly RotationManager _rotationStore = new();
         private readonly UserSettingsManager _settings = new();
         private readonly LibraryIndexStore _libraryIndex = new();
         private readonly IReadOnlyList<AppQuote> _quotes = QuoteManager.Load();
@@ -629,6 +630,8 @@ namespace LivePhotoViewer.WPF
             _tagStore.RemoveAll(photo.Directory, photo.FileName);
             _holdFrameStore.Set(newPath, photo.HoldFrameTime);
             _holdFrameStore.Remove(photo.FilePath);
+            _rotationStore.Set(newPath, photo.SavedRotationQuarterTurns);
+            _rotationStore.Remove(photo.FilePath);
         }
 
         private void CopySelectedPhotos(PhotoItem? preferredPhoto = null)
@@ -994,7 +997,7 @@ namespace LivePhotoViewer.WPF
             var message = new TextBlock
             {
                 Text = protectsMotion
-                    ? "这是实况或可能包含动态资源的照片。为避免破坏内嵌视频或配套 MOV，只能另存为静态副本；原始实况照片不会被修改。"
+                    ? "“保存实况旋转”会像手机相册一样保存可恢复的查看方向，并让封面与实况视频同步旋转；原始 JPG/HEIC、内嵌视频和配套 MOV 不会被改写。也可以另存为不含动态视频的静态副本。"
                     : canOverwrite
                         ? "覆盖会直接改写磁盘上的原图；另存为会保留原文件。"
                         : "Windows 当前不能直接写回这种图片格式，请另存为 JPG、PNG、BMP 或 TIFF。",
@@ -1007,10 +1010,23 @@ namespace LivePhotoViewer.WPF
                 Orientation = Orientation.Horizontal,
                 HorizontalAlignment = HorizontalAlignment.Right
             };
+            Button? saveAdjustment = null;
+            if (protectsMotion)
+            {
+                saveAdjustment = new Button
+                {
+                    Content = "保存实况旋转",
+                    IsDefault = true,
+                    MinWidth = 122,
+                    Margin = new Thickness(0, 0, 6, 0),
+                    Style = (Style)FindResource("FlatButtonStyle")
+                };
+                buttons.Children.Add(saveAdjustment);
+            }
             var saveAs = new Button
             {
                 Content = protectsMotion ? "另存为静态副本…" : "另存为…",
-                IsDefault = true,
+                IsDefault = !protectsMotion,
                 MinWidth = 112,
                 Margin = new Thickness(0, 0, 6, 0),
                 Style = (Style)FindResource("FlatButtonStyle")
@@ -1050,6 +1066,14 @@ namespace LivePhotoViewer.WPF
                 Background = (Brush)FindResource("CardBgBrush"),
                 Foreground = (Brush)FindResource("TextBrush")
             };
+            if (saveAdjustment != null)
+            {
+                saveAdjustment.Click += (_, _) =>
+                {
+                    choice = RotationSaveChoice.SaveAdjustment;
+                    dialog.DialogResult = true;
+                };
+            }
             saveAs.Click += (_, _) =>
             {
                 choice = RotationSaveChoice.SaveAs;
@@ -1163,6 +1187,7 @@ namespace LivePhotoViewer.WPF
                     photo.IsFavorite = _favoriteStore.IsFavorite(photo.Directory, photo.FileName);
                     photo.Tags = _tagStore.GetTags(photo.Directory, photo.FileName);
                     photo.HoldFrameTime = _holdFrameStore.Get(photo.FilePath);
+                    photo.SavedRotationQuarterTurns = _rotationStore.Get(photo.FilePath);
                     if (index.TryGetValue(photo.FilePath, out LibraryIndexEntry? entry) && entry.Matches(photo))
                         entry.Apply(photo);
                     if (!string.IsNullOrWhiteSpace(photo.CompanionVideoPath))
@@ -2117,6 +2142,12 @@ namespace LivePhotoViewer.WPF
             EnsureMediaPlayer();
             _currentVlcMedia?.Dispose();
             _currentVlcMedia = new VlcMedia(_libVlc, new Uri(path));
+            int videoRotation = ((photo.SavedRotationQuarterTurns + _viewerRotationQuarterTurns) % 4 + 4) % 4;
+            if (videoRotation != 0)
+            {
+                _currentVlcMedia.AddOption(":video-filter=transform");
+                _currentVlcMedia.AddOption($":transform-type={videoRotation * 90}");
+            }
             _mediaSessionId++;
             ViewerImage.Visibility = Visibility.Collapsed;
             ViewerVideoView.Visibility = Visibility.Visible;
@@ -2238,7 +2269,7 @@ namespace LivePhotoViewer.WPF
             PhotoItem photo = _visiblePhotos[_viewerIndex];
             if (photo.IsVideo || ViewerVideoView.Visibility == Visibility.Visible) return;
             _viewerRotationQuarterTurns = (_viewerRotationQuarterTurns + quarterTurns) % 4;
-            ViewerRotateTransform.Angle = _viewerRotationQuarterTurns * 90;
+            ApplyViewerRotation(photo);
             ResetViewerTransform();
             UpdateViewerZoomControls();
         }
@@ -2246,20 +2277,53 @@ namespace LivePhotoViewer.WPF
         private void ResetViewerRotation()
         {
             _viewerRotationQuarterTurns = 0;
-            if (IsLoaded) ViewerRotateTransform.Angle = 0;
+            if (!IsLoaded) return;
+            if (_viewerIndex >= 0 && _viewerIndex < _visiblePhotos.Count)
+                ApplyViewerRotation(_visiblePhotos[_viewerIndex]);
+            else
+                ViewerRotateTransform.Angle = 0;
+        }
+
+        private void ApplyViewerRotation(PhotoItem photo)
+        {
+            int turns = ((photo.SavedRotationQuarterTurns + _viewerRotationQuarterTurns) % 4 + 4) % 4;
+            ViewerRotateTransform.Angle = turns * 90;
         }
 
         private async void ViewerSaveRotation_Click(object sender, RoutedEventArgs e)
         {
             if (_isWorking) return;
             if (_viewerIndex < 0 || _viewerIndex >= _visiblePhotos.Count) return;
-            int turns = ((_viewerRotationQuarterTurns % 4) + 4) % 4;
-            if (turns == 0) return;
+            int pendingTurns = ((_viewerRotationQuarterTurns % 4) + 4) % 4;
+            if (pendingTurns == 0) return;
             PhotoItem photo = _visiblePhotos[_viewerIndex];
-            bool protectsMotion = photo.IsLivePhoto || !photo.IsLiveStatusKnown || !string.IsNullOrWhiteSpace(photo.CompanionVideoPath);
+            int turns = ((photo.SavedRotationQuarterTurns + _viewerRotationQuarterTurns) % 4 + 4) % 4;
+            bool protectsMotion = photo.IsLivePhoto
+                || !photo.IsLiveStatusKnown
+                || !string.IsNullOrWhiteSpace(photo.CompanionVideoPath)
+                || photo.SavedRotationQuarterTurns != 0;
             bool canOverwrite = !protectsMotion && ImageRotationService.CanWrite(photo.FilePath);
             RotationSaveChoice choice = ShowRotationSaveChoice(protectsMotion, canOverwrite);
             if (choice == RotationSaveChoice.Cancel) return;
+
+            if (choice == RotationSaveChoice.SaveAdjustment)
+            {
+                photo.SavedRotationQuarterTurns = turns;
+                _rotationStore.Set(photo.FilePath, turns);
+                if (_cardMap.TryGetValue(photo.StableId, out ThumbnailCard? card))
+                    card.SetSavedRotation(turns);
+                ResetViewerRotation();
+                SetStatus(turns == 0
+                    ? $"已恢复原始方向：{photo.FileName}"
+                    : $"已保存可恢复的实况旋转：{photo.FileName}");
+                MessageBox.Show(
+                    this,
+                    "旋转方向已保存，封面和实况视频会同步显示；原始实况资源保持不变，可随时旋转回来。",
+                    "实况旋转已保存",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
 
             bool overwrite = choice == RotationSaveChoice.Overwrite;
             string destination = photo.FilePath;
@@ -2297,6 +2361,11 @@ namespace LivePhotoViewer.WPF
                     destination,
                     turns,
                     overwrite));
+                if (overwrite && photo.SavedRotationQuarterTurns != 0)
+                {
+                    _rotationStore.Remove(photo.FilePath);
+                    photo.SavedRotationQuarterTurns = 0;
+                }
                 ResetViewerRotation();
                 string savedDirectory = Path.GetDirectoryName(destination) ?? photo.Directory;
                 string browseAfterSave = IsSameOrDescendant(savedDirectory, _currentDirectory)
@@ -2764,6 +2833,7 @@ namespace LivePhotoViewer.WPF
                     _favoriteStore.Remove(photo.Directory, photo.FileName);
                     _tagStore.RemoveAll(photo.Directory, photo.FileName);
                     _holdFrameStore.Remove(photo.FilePath);
+                    _rotationStore.Remove(photo.FilePath);
                     _cardMap.Remove(photo.StableId);
                     _thumbnailMap.Remove(photo.StableId);
                     _photos.Remove(photo);

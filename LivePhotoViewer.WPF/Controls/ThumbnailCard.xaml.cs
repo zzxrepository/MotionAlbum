@@ -51,6 +51,7 @@ namespace LivePhotoViewer.WPF.Controls
             UpdateMetaText();
             UpdateFavoriteStyle();
             UpdateMediaBadge();
+            ApplySavedRotation();
 
             if (!isLoading) LoadingText.Visibility = Visibility.Collapsed;
 
@@ -181,6 +182,17 @@ namespace LivePhotoViewer.WPF.Controls
                     Child = new TextBlock { Text = tag, FontSize = 9, Foreground = (Brush)FindResource("SubTextBrush") }
                 });
             }
+        }
+
+        public void SetSavedRotation(int quarterTurns)
+        {
+            _photo.SavedRotationQuarterTurns = ((quarterTurns % 4) + 4) % 4;
+            ApplySavedRotation();
+        }
+
+        private void ApplySavedRotation()
+        {
+            ThumbImage.LayoutTransform = new RotateTransform(_photo.SavedRotationQuarterTurns * 90);
         }
 
         private void Card_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)

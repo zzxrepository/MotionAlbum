@@ -367,18 +367,20 @@
                 </Border>
 
                 <Grid x:Name="ViewerImageContainer" Grid.Row="1" Background="{DynamicResource ViewerBgBrush}" MouseWheel="ViewerImageContainer_MouseWheel" MouseLeftButtonDown="ViewerImageContainer_MouseLeftButtonDown" MouseMove="ViewerImageContainer_MouseMove" MouseLeftButtonUp="ViewerImageContainer_MouseLeftButtonUp" IsManipulationEnabled="True" ManipulationStarting="ViewerImageContainer_ManipulationStarting" ManipulationDelta="ViewerImageContainer_ManipulationDelta">
-                    <Image x:Name="ViewerImage" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality" RenderTransformOrigin="0.5,0.5">
-                        <Image.LayoutTransform>
-                            <RotateTransform x:Name="ViewerRotateTransform" Angle="0"/>
-                        </Image.LayoutTransform>
-                        <Image.RenderTransform>
-                            <TransformGroup>
-                                <ScaleTransform x:Name="ViewerScaleTransform" ScaleX="1" ScaleY="1"/>
-                                <TranslateTransform x:Name="ViewerTranslateTransform"/>
-                            </TransformGroup>
-                        </Image.RenderTransform>
-                    </Image>
-                    <vlc:VideoView x:Name="ViewerVideoView" Visibility="Collapsed"/>
+                    <Grid x:Name="ViewerMediaSurface" RenderTransformOrigin="0.5,0.5">
+                        <Image x:Name="ViewerImage" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality" RenderTransformOrigin="0.5,0.5">
+                            <Image.LayoutTransform>
+                                <RotateTransform x:Name="ViewerRotateTransform" Angle="0"/>
+                            </Image.LayoutTransform>
+                            <Image.RenderTransform>
+                                <TransformGroup>
+                                    <ScaleTransform x:Name="ViewerScaleTransform" ScaleX="1" ScaleY="1"/>
+                                    <TranslateTransform x:Name="ViewerTranslateTransform"/>
+                                </TransformGroup>
+                            </Image.RenderTransform>
+                        </Image>
+                        <vlc:VideoView x:Name="ViewerVideoView" Visibility="Collapsed"/>
+                    </Grid>
                     <Button x:Name="LeftNavZone" Content="‹" FontSize="34" HorizontalAlignment="Left" VerticalAlignment="Stretch" Width="82" Opacity="0.35" Click="ViewerPrev_Click" Background="Transparent" BorderThickness="0"/>
                     <Button x:Name="RightNavZone" Content="›" FontSize="34" HorizontalAlignment="Right" VerticalAlignment="Stretch" Width="82" Opacity="0.35" Click="ViewerNext_Click" Background="Transparent" BorderThickness="0"/>
                 </Grid>

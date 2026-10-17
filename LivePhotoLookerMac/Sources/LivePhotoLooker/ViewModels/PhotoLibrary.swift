@@ -93,6 +93,7 @@ final class PhotoLibrary: ObservableObject {
     private let selectionStore = SelectionStore()
     private let tagStore = TagStore()
     private let holdFrameStore = HoldFrameStore()
+    private let rotationStore = RotationStore()
     private let recentFolderStore = RecentFolderStore()
     private let libraryIndexStore = LibraryIndexStore()
     private let detectionQueue: OperationQueue = {
@@ -401,6 +402,7 @@ final class PhotoLibrary: ObservableObject {
         let selectedNames = selectionStore.selectedFileNames(in: folder)
         let tagMap = tagStore.tagsByFileName(in: folder)
         let holdFrameMap = holdFrameStore.holdFrameTimes(in: folder)
+        let rotationMap = rotationStore.rotations(in: folder)
         photos = descriptors.map { descriptor in
             let selectionKey = Self.relativeSelectionKey(for: descriptor.url, root: folder)
             let initialLiveStatus = descriptor.mediaKind == .video
@@ -414,6 +416,7 @@ final class PhotoLibrary: ObservableObject {
                 tags: tagMap[selectionKey] ?? []
             )
             item.holdFrameTime = holdFrameMap[selectionKey]
+            item.savedRotationQuarterTurns = rotationMap[selectionKey] ?? 0
             return item
         }
         rebuildDirectoryIndex(root: folder, discoveredDirectories: discoveredDirectories)
@@ -436,6 +439,17 @@ final class PhotoLibrary: ObservableObject {
         )
         revision &+= 1
         statusMessage = item.isSelected ? "已加入我喜欢：\(item.fileName)" : "已取消喜欢：\(item.fileName)"
+    }
+
+    func setSavedRotation(_ quarterTurns: Int, for item: PhotoItem) {
+        guard let currentFolder else { return }
+        let normalized = ((quarterTurns % 4) + 4) % 4
+        item.savedRotationQuarterTurns = normalized
+        rotationStore.setRotation(normalized, fileName: item.selectionKey, folder: currentFolder)
+        revision &+= 1
+        statusMessage = normalized == 0
+            ? "已恢复原始方向：\(item.fileName)"
+            : "已保存可恢复的旋转：\(item.fileName)"
     }
 
     func addTag(_ rawTag: String, to item: PhotoItem) {
@@ -598,6 +612,8 @@ final class PhotoLibrary: ObservableObject {
         tagStore.setTags([], fileName: oldSelectionKey, folder: currentFolder)
         holdFrameStore.setHoldFrameTime(item.holdFrameTime, fileName: newSelectionKey, folder: currentFolder)
         holdFrameStore.setHoldFrameTime(nil, fileName: oldSelectionKey, folder: currentFolder)
+        rotationStore.setRotation(item.savedRotationQuarterTurns, fileName: newSelectionKey, folder: currentFolder)
+        rotationStore.setRotation(0, fileName: oldSelectionKey, folder: currentFolder)
 
         statusMessage = "已移动：\(item.fileName) → \(destinationDirectory.lastPathComponent)"
         reload(selecting: destinationDirectory)
@@ -682,6 +698,8 @@ final class PhotoLibrary: ObservableObject {
             tagStore.setTags([], fileName: item.selectionKey, folder: currentFolder)
             holdFrameStore.setHoldFrameTime(item.holdFrameTime, fileName: newSelectionKey, folder: currentFolder)
             holdFrameStore.setHoldFrameTime(nil, fileName: item.selectionKey, folder: currentFolder)
+            rotationStore.setRotation(item.savedRotationQuarterTurns, fileName: newSelectionKey, folder: currentFolder)
+            rotationStore.setRotation(0, fileName: item.selectionKey, folder: currentFolder)
         }
 
         statusMessage = "已移动文件夹：\(directory.name) → \(destinationDirectory.lastPathComponent)"
@@ -767,6 +785,7 @@ final class PhotoLibrary: ObservableObject {
         selectionStore.remove(fileNames: selectionKeys, in: currentFolder)
         tagStore.remove(fileNames: selectionKeys, in: currentFolder)
         holdFrameStore.remove(fileNames: selectionKeys, in: currentFolder)
+        rotationStore.remove(fileNames: selectionKeys, in: currentFolder)
         Task { [libraryIndexStore, currentFolder] in
             await libraryIndexStore.removeFolderIndex(folder: currentFolder, recursively: true)
         }
